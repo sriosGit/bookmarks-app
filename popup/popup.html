@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bookmarks App</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1 class="title">📚 Bookmarks</h1>
+            <button id="saveCurrent" class="save-btn">💾 Guardar</button>
+        </header>
+
+        <!-- Tabs -->
+        <div class="tabs-container">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="bookmarks">📖 Favoritos</button>
+                <button class="tab-btn" data-tab="tags">🏷️ Etiquetas</button>
+            </div>
+        </div>
+
+        <!-- Bookmarks Tab -->
+        <div id="bookmarksTab" class="tab-content active">
+            <!-- Search -->
+            <div class="search-container">
+                <input type="text" id="searchInput" placeholder="🔍 Buscar en favoritos..." class="search-input">
+            </div>
+
+            <!-- Bookmarks list -->
+            <div class="bookmarks-container">
+                <div id="bookmarksList" class="bookmarks-list">
+                    <!-- Bookmarks will be populated here -->
+                </div>
+            </div>
+
+            <!-- Empty state -->
+            <div id="emptyState" class="empty-state" style="display: none;">
+                <p>📖 No hay favoritos guardados</p>
+                <p>Haz clic en "Guardar" para añadir la página actual</p>
+            </div>
+        </div>
+
+        <!-- Tags Tab -->
+        <div id="tagsTab" class="tab-content">
+            <!-- Tags filter -->
+            <div class="tags-container">
+                <h3 class="section-title">🏷️ Selecciona etiquetas para filtrar</h3>
+                <div id="tagsList" class="tags-list">
+                    <!-- Tags will be populated here -->
+                </div>
+            </div>
+
+            <!-- Filtered bookmarks -->
+            <div class="bookmarks-container">
+                <div id="filteredBookmarksList" class="bookmarks-list">
+                    <!-- Filtered bookmarks will be populated here -->
+                </div>
+            </div>
+
+            <!-- Empty filtered state -->
+            <div id="emptyFilteredState" class="empty-state" style="display: none;">
+                <p>🔍 No se encontraron favoritos</p>
+                <p>Prueba seleccionando otras etiquetas</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html> 

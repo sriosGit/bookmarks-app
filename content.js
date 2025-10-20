@@ -1,9 +1,19 @@
 // Content script to extract page metadata
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'getPageData') {
-        const pageData = extractPageData();
-        sendResponse(pageData);
+        try {
+            const pageData = extractPageData();
+            sendResponse(pageData);
+        } catch (error) {
+            console.error('Error extracting page data:', error);
+            sendResponse({
+                title: document.title || '',
+                description: '',
+                tags: []
+            });
+        }
     }
+    return true; // Keep the message channel open for async responses
 });
 
 function extractPageData() {

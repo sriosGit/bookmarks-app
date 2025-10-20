@@ -1,6 +1,6 @@
 # 📚 Bookmarks App - Chrome Extension
 
-Una extensión simple y elegante para guardar y organizar tus favoritos, inspirada en Pocket pero con funcionalidad local.
+Una extensión simple y elegante para guardar y organizar tus favoritos, inspirada en Pocket pero con **sincronización en la nube usando GitHub**.
 
 ## ✨ Características
 
@@ -9,7 +9,9 @@ Una extensión simple y elegante para guardar y organizar tus favoritos, inspira
 - **Búsqueda**: Encuentra rápidamente tus favoritos
 - **Filtros por etiquetas**: Organiza y filtra por categorías
 - **Interfaz moderna**: Diseño limpio y fácil de usar
-- **Almacenamiento local**: Tus datos se guardan en tu navegador
+- **☁️ Sincronización en la nube**: Tus favoritos se sincronizan con GitHub
+- **🔄 Multi-dispositivo**: Accede a tus favoritos desde cualquier dispositivo
+- **💾 Backup automático**: Tus datos están seguros en GitHub
 
 ## 🚀 Instalación
 
@@ -45,6 +47,14 @@ Una extensión simple y elegante para guardar y organizar tus favoritos, inspira
 - **Abrir**: Haz clic en cualquier favorito para abrirlo
 - **Eliminar**: Usa el botón 🗑️ para eliminar favoritos
 
+### Sincronizar con GitHub
+1. Ve a la pestaña "☁️ Sincronizar"
+2. Haz clic en "🔗 Conectar con GitHub"
+3. Sigue las instrucciones para configurar tu token
+4. ¡Disfruta de la sincronización automática!
+
+> 📖 **Ver [GITHUB_SETUP.md](GITHUB_SETUP.md) para instrucciones detalladas de configuración**
+
 ## 🛠️ Estructura del proyecto
 
 ```
@@ -53,10 +63,14 @@ bookmarks-app/
 ├── popup/
 │   ├── popup.html         # Interfaz del popup
 │   ├── popup.css          # Estilos
-│   └── popup.js           # Lógica del popup
+│   └── popup.js            # Lógica del popup
+├── services/
+│   ├── githubService.js   # Servicio de GitHub API
+│   └── githubAuth.js      # Autenticación con GitHub
 ├── content.js             # Script que se ejecuta en las páginas
 ├── background.js          # Service worker
 ├── icons/                 # Iconos de la extensión
+├── GITHUB_SETUP.md        # Guía de configuración de GitHub
 └── README.md              # Este archivo
 ```
 
@@ -67,6 +81,8 @@ bookmarks-app/
 - **CSS3**: Estilos modernos con gradientes y animaciones
 - **JavaScript ES6+**: Lógica de la aplicación
 - **Chrome Extensions API**: Funcionalidad del navegador
+- **GitHub API**: Sincronización en la nube
+- **OAuth 2.0**: Autenticación segura
 
 ### Funcionalidades implementadas
 - ✅ Guardado de páginas con metadatos
@@ -75,13 +91,17 @@ bookmarks-app/
 - ✅ Búsqueda y filtros
 - ✅ Almacenamiento local
 - ✅ Interfaz responsive
+- ✅ **Sincronización con GitHub**
+- ✅ **Autenticación segura**
+- ✅ **Sincronización multi-dispositivo**
+- ✅ **Backup automático en la nube**
 
 ### Próximas funcionalidades
-- 🔄 Sincronización entre dispositivos
 - 🔄 Exportación/importación de datos
 - 🔄 Lectura offline de artículos
 - 🔄 Categorías personalizadas
 - 🔄 Atajos de teclado
+- 🔄 Sincronización automática en tiempo real
 
 ## 🎨 Personalización
 

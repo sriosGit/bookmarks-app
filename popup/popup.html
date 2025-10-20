@@ -11,14 +11,29 @@
         <!-- Header -->
         <header class="header">
             <h1 class="title">📚 Bookmarks</h1>
-            <button id="saveCurrent" class="save-btn">💾 Guardar</button>
+            <div class="header-actions">
+                <button id="saveCurrent" class="save-btn">💾 Guardar</button>
+            </div>
         </header>
+
+        <!-- GitHub Status -->
+        <div id="githubStatus" class="github-status" style="display: none;">
+            <div class="github-info">
+                <span id="githubUser" class="github-user"></span>
+                <span id="lastSync" class="last-sync"></span>
+            </div>
+            <div class="github-actions">
+                <button id="connectGitHub" class="github-btn connect">🔗 Conectar</button>
+                <button id="disconnectGitHub" class="github-btn disconnect" style="display: none;">🔌 Desconectar</button>
+            </div>
+        </div>
 
         <!-- Tabs -->
         <div class="tabs-container">
             <div class="tabs">
                 <button class="tab-btn active" data-tab="bookmarks">📖 Favoritos</button>
                 <button class="tab-btn" data-tab="tags">🏷️ Etiquetas</button>
+                <button class="tab-btn" data-tab="sync">☁️ Sincronizar</button>
             </div>
         </div>
 
@@ -66,8 +81,98 @@
                 <p>Prueba seleccionando otras etiquetas</p>
             </div>
         </div>
+
+        <!-- Sync Tab -->
+        <div id="syncTab" class="tab-content">
+            <div class="sync-container">
+                <h3 class="section-title">☁️ Sincronización con GitHub</h3>
+                
+                <!-- GitHub Connection Status -->
+                <div id="githubConnectionStatus" class="connection-status">
+                    <div class="status-indicator">
+                        <span id="connectionIcon" class="status-icon">🔴</span>
+                        <span id="connectionText" class="status-text">Desconectado</span>
+                    </div>
+                </div>
+
+                <!-- GitHub Actions -->
+                <div class="sync-actions">
+                    <button id="connectGitHubBtn" class="action-button primary">
+                        🔗 Conectar con GitHub
+                    </button>
+                    <button id="disconnectGitHubBtn" class="action-button secondary" style="display: none;">
+                        🔌 Desconectar
+                    </button>
+                </div>
+
+                <!-- Repository Selection -->
+                <div id="repoSelection" class="repo-selection-container" style="display: none;">
+                    <h4>📁 Seleccionar Repositorio</h4>
+                    <div class="repo-info">
+                        <p id="repoStatus" class="repo-status">Verificando repositorio...</p>
+                    </div>
+                    <div class="repo-actions">
+                        <button id="selectRepo" class="action-button secondary">
+                            📁 Cambiar Repositorio
+                        </button>
+                        <button id="createRepo" class="action-button primary">
+                            ➕ Crear Nuevo Repositorio
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Repository List Modal -->
+                <div id="repoListModal" class="modal-overlay" style="display: none;">
+                    <div class="modal-content">
+                        <h3>📁 Seleccionar Repositorio</h3>
+                        <div id="repoList" class="repo-list">
+                            <!-- Repositorios se cargarán aquí -->
+                        </div>
+                        <div class="modal-actions">
+                            <button id="cancelRepoSelection" class="action-button secondary">Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sync Actions -->
+                <div id="syncActions" class="sync-actions-container" style="display: none;">
+                    <h4>Sincronización</h4>
+                    <div class="sync-buttons">
+                        <button id="syncFromGitHub" class="sync-button">
+                            ⬇️ Descargar desde GitHub
+                        </button>
+                        <button id="syncToGitHub" class="sync-button">
+                            ⬆️ Subir a GitHub
+                        </button>
+                        <button id="fullSync" class="sync-button primary">
+                            🔄 Sincronización completa
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sync Info -->
+                <div id="syncInfo" class="sync-info" style="display: none;">
+                    <h4>Información de sincronización</h4>
+                    <div class="info-item">
+                        <span class="info-label">Usuario:</span>
+                        <span id="githubUsername" class="info-value"></span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Repositorio:</span>
+                        <span id="githubRepo" class="info-value"></span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Última sincronización:</span>
+                        <span id="lastSyncTime" class="info-value"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
+    <!-- Scripts -->
+    <script src="../services/githubService.js"></script>
+    <script src="../services/githubAuth.js"></script>
     <script src="popup.js"></script>
 </body>
 </html> 

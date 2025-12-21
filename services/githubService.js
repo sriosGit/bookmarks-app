@@ -8,6 +8,20 @@ class GitHubService {
         this.filePath = 'bookmarks.json';
     }
 
+    // Codificar string UTF-8 a base64 (soporta emojis y caracteres especiales)
+    utf8ToBase64(str) {
+        const bytes = new TextEncoder().encode(str);
+        const binString = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join('');
+        return btoa(binString);
+    }
+
+    // Decodificar base64 a string UTF-8 (soporta emojis y caracteres especiales)
+    base64ToUtf8(base64) {
+        const binString = atob(base64);
+        const bytes = Uint8Array.from(binString, (char) => char.codePointAt(0));
+        return new TextDecoder().decode(bytes);
+    }
+
     // Configurar token de GitHub
     async setToken(token) {
         this.token = token;
@@ -94,8 +108,8 @@ class GitHubService {
             const response = await this.makeRequest('GET', `/repos/${this.username}/${this.repoName}/contents/${this.filePath}`);
             
             if (response.content) {
-                // Decodificar contenido base64
-                const content = atob(response.content);
+                // Decodificar contenido base64 (con soporte para UTF-8/emojis)
+                const content = this.base64ToUtf8(response.content.replace(/\n/g, ''));
                 return {
                     success: true,
                     data: JSON.parse(content),
@@ -124,7 +138,8 @@ class GitHubService {
     // Subir favoritos al repositorio
     async uploadBookmarks(bookmarks, sha = null) {
         try {
-            const content = btoa(JSON.stringify(bookmarks, null, 2));
+            // Codificar a base64 con soporte UTF-8 (emojis y caracteres especiales)
+            const content = this.utf8ToBase64(JSON.stringify(bookmarks, null, 2));
             
             const data = {
                 message: `Actualizar favoritos - ${new Date().toISOString()}`,
@@ -299,7 +314,8 @@ class GitHubService {
     // Crear archivo de favoritos en repositorio existente
     async createBookmarksFileInRepository(bookmarks = []) {
         try {
-            const content = btoa(JSON.stringify(bookmarks, null, 2));
+            // Codificar a base64 con soporte UTF-8 (emojis y caracteres especiales)
+            const content = this.utf8ToBase64(JSON.stringify(bookmarks, null, 2));
             
             const data = {
                 message: `Crear archivo de favoritos - ${new Date().toISOString()}`,

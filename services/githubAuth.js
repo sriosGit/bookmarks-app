@@ -57,7 +57,7 @@ class GitHubAuth {
                         submitBtn.disabled = false;
                         submitBtn.style.background = '#28a745';
                     } else {
-                        this.showTokenError('❌ Token inválido. Verifica que tenga permisos de "repo"');
+                        this.showTokenError('❌ Token inválido. Verifica que tenga permiso "Contents: Read and write" en el repositorio');
                     }
                 } catch (error) {
                     this.showTokenError('❌ Error validando token: ' + error.message);
@@ -163,10 +163,10 @@ class GitHubAuth {
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
                     <h4 style="margin: 0 0 10px 0; color: #333; font-size: 14px;">📋 Pasos:</h4>
                     <ol style="margin: 0; color: #666; font-size: 13px; line-height: 1.6;">
-                        <li>Ve a <a href="https://github.com/settings/tokens" target="_blank" style="color: #667eea;">GitHub Settings > Tokens</a></li>
-                        <li>Haz clic en "Generate new token (classic)"</li>
-                        <li>Selecciona el scope <strong>"repo"</strong> (acceso completo a repositorios)</li>
-                        <li>Copia el token generado y pégalo abajo</li>
+                        <li>Ve a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" style="color: #667eea;">GitHub Settings &gt; Fine-grained tokens</a></li>
+                        <li>Selecciona <strong>solo el repositorio</strong> <code>bookmarks</code> en "Repository access"</li>
+                        <li>En "Repository permissions" activa <strong>Contents: Read and write</strong> únicamente</li>
+                        <li>Genera el token, cópialo y pégalo abajo</li>
                     </ol>
                 </div>
 
@@ -263,8 +263,8 @@ class GitHubAuth {
         }
     }
 
-    // Verificar si el usuario está autenticado
-    async isAuthenticated() {
+    // Verificar si hay un token almacenado (no valida que sea válido)
+    async hasStoredToken() {
         const token = await this.getStoredToken();
         return token !== null;
     }

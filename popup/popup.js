@@ -179,10 +179,10 @@ class BookmarksApp {
          pageData.tags || []
        );
 
-       await this.addBookmark(bookmark);
+       const result = await this.addBookmark(bookmark);
 
-       // Show success feedback
-       saveBtn.textContent = "✅ Guardado!";
+       // Show success or duplicate feedback
+       saveBtn.textContent = result.duplicate ? "⚠️ Ya guardado" : "✅ Guardado!";
        setTimeout(() => {
          saveBtn.textContent = originalText;
          saveBtn.disabled = false;
@@ -199,10 +199,16 @@ class BookmarksApp {
    }
 
   async addBookmark(bookmark) {
+    const isDuplicate = this.bookmarks.some((b) => b.url === bookmark.url);
+    if (isDuplicate) {
+      this.showNotification("⚠️ Esta página ya está guardada", "warning");
+      return { added: false, duplicate: true };
+    }
     this.bookmarks.unshift(bookmark);
     await this.saveBookmarks();
     this.filterBookmarks();
     this.render();
+    return { added: true, duplicate: false };
   }
 
   async removeBookmark(bookmarkId) {
@@ -555,8 +561,8 @@ class BookmarksApp {
   // Verificar conexión con GitHub
   async checkGitHubConnection() {
     try {
-      const isAuthenticated = await this.githubAuth.isAuthenticated();
-      if (isAuthenticated) {
+      const hasToken = await this.githubAuth.hasStoredToken();
+      if (hasToken) {
         const token = await this.githubAuth.getStoredToken();
         const result = await this.githubService.setToken(token);
         if (result.success) {
@@ -614,14 +620,14 @@ class BookmarksApp {
   }
 
   // Sincronizar desde GitHub
-  async syncFromGitHub() {
+  async syncFromGitHub(silent = false) {
     if (!this.isGitHubConnected) {
       this.showNotification("⚠️ No estás conectado a GitHub", "warning");
       return { success: false, error: "No conectado a GitHub" };
     }
 
     try {
-      this.showNotification("🔄 Sincronizando desde GitHub...", "info");
+      if (!silent) this.showNotification("🔄 Sincronizando desde GitHub...", "info");
 
       const result = await this.githubService.syncFromGitHub();
       if (result.success) {
@@ -634,7 +640,7 @@ class BookmarksApp {
         await this.saveBookmarks();
         this.lastSync = result.lastSync;
 
-        this.showNotification("✅ Sincronizado desde GitHub", "success");
+        if (!silent) this.showNotification("✅ Sincronizado desde GitHub", "success");
         this.render();
         return { success: true, bookmarks: mergedBookmarks };
       } else {
@@ -642,7 +648,7 @@ class BookmarksApp {
       }
     } catch (error) {
       console.error("Error sincronizando desde GitHub:", error);
-      this.showNotification(
+      if (!silent) this.showNotification(
         "❌ Error sincronizando: " + error.message,
         "error"
       );
@@ -651,26 +657,26 @@ class BookmarksApp {
   }
 
   // Sincronizar a GitHub
-  async syncToGitHub() {
+  async syncToGitHub(silent = false) {
     if (!this.isGitHubConnected) {
       this.showNotification("⚠️ No estás conectado a GitHub", "warning");
       return { success: false, error: "No conectado a GitHub" };
     }
 
     try {
-      this.showNotification("🔄 Sincronizando a GitHub...", "info");
+      if (!silent) this.showNotification("🔄 Sincronizando a GitHub...", "info");
 
       const result = await this.githubService.syncToGitHub(this.bookmarks);
       if (result.success) {
         this.lastSync = result.lastSync;
-        this.showNotification("✅ Sincronizado a GitHub", "success");
+        if (!silent) this.showNotification("✅ Sincronizado a GitHub", "success");
         return { success: true };
       } else {
         throw new Error(result.error);
       }
     } catch (error) {
       console.error("Error sincronizando a GitHub:", error);
-      this.showNotification(
+      if (!silent) this.showNotification(
         "❌ Error sincronizando: " + error.message,
         "error"
       );
@@ -689,13 +695,13 @@ class BookmarksApp {
       this.showNotification("🔄 Sincronización completa...", "info");
 
       // Primero sincronizar desde GitHub
-      const fromResult = await this.syncFromGitHub();
+      const fromResult = await this.syncFromGitHub(true);
       if (!fromResult.success) {
         throw new Error("Error sincronizando desde GitHub");
       }
 
       // Luego sincronizar a GitHub
-      const toResult = await this.syncToGitHub();
+      const toResult = await this.syncToGitHub(true);
       if (!toResult.success) {
         throw new Error("Error sincronizando a GitHub");
       }
@@ -1253,28 +1259,28 @@ class BookmarksApp {
 
       // Cambiar temporalmente al repositorio fuente
       const originalRepo = this.githubService.repoName;
-      this.githubService.repoName = sourceRepoName;
+      let sourceResult;
+      try {
+        this.githubService.repoName = sourceRepoName;
 
-      // Obtener favoritos del repositorio fuente
-      const sourceResult = await this.githubService.syncFromGitHub();
-      if (!sourceResult.success) {
-        throw new Error("Error obteniendo favoritos del repositorio fuente");
+        // Obtener favoritos del repositorio fuente
+        sourceResult = await this.githubService.syncFromGitHub();
+        if (!sourceResult.success) {
+          throw new Error("Error obteniendo favoritos del repositorio fuente");
+        }
+
+        // Cambiar al repositorio destino y crear archivo de favoritos
+        this.githubService.repoName = targetRepoName;
+        const createResult =
+          await this.githubService.createBookmarksFileInRepository(
+            sourceResult.bookmarks
+          );
+        if (!createResult.success) {
+          throw new Error("Error creando archivo en repositorio destino");
+        }
+      } finally {
+        this.githubService.repoName = originalRepo;
       }
-
-      // Cambiar al repositorio destino
-      this.githubService.repoName = targetRepoName;
-
-      // Crear archivo de favoritos en el repositorio destino
-      const createResult =
-        await this.githubService.createBookmarksFileInRepository(
-          sourceResult.bookmarks
-        );
-      if (!createResult.success) {
-        throw new Error("Error creando archivo en repositorio destino");
-      }
-
-      // Restaurar repositorio original
-      this.githubService.repoName = originalRepo;
 
       // Verificar estado del repositorio destino
       await this.checkRepositoryStatus();

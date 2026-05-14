@@ -2,21 +2,22 @@
 
 ## 📋 Pasos para configurar la sincronización con GitHub
 
-### 1. Crear un Token de Acceso Personal
+### 1. Crear un Token de Acceso Personal (Fine-grained)
 
 1. **Ve a GitHub Settings**
-   - Abre [GitHub Settings > Tokens](https://github.com/settings/tokens)
-   - Haz clic en "Generate new token (classic)"
+   - Abre [GitHub Settings > Fine-grained tokens](https://github.com/settings/personal-access-tokens/new)
+   - Haz clic en "Generate new token" (fine-grained)
 
 2. **Configurar el Token**
-   - **Note**: `Bookmarks App - Favoritos`
-   - **Expiration**: `No expiration` (o el tiempo que prefieras)
-   - **Scopes**: Selecciona `repo` (acceso completo a repositorios)
+   - **Token name**: `Bookmarks App`
+   - **Expiration**: el tiempo que prefieras
+   - **Repository access**: Selecciona **Only select repositories** → elige el repositorio `bookmarks`
+   - **Repository permissions** → **Contents**: `Read and write` (no otorgues ningún otro permiso)
 
 3. **Generar y Copiar**
    - Haz clic en "Generate token"
    - **IMPORTANTE**: Copia el token inmediatamente (no podrás verlo después)
-   - El token comenzará con `ghp_` seguido de caracteres alfanuméricos
+   - El token comenzará con `github_pat_` seguido de caracteres alfanuméricos
 
 ### 2. Configurar la Extensión
 
@@ -73,10 +74,10 @@ favoritos/
 ### 7. Solución de Problemas
 
 #### **Error: "Token inválido"**
-- Verifica que el token tenga permisos de `repo`
+- Verifica que el token tenga permiso **Contents: Read and write** sobre el repositorio `bookmarks`
 - Asegúrate de que el token no haya expirado
 - Usa el botón "🔍 Validar" para verificar el token
-- Genera un nuevo token si es necesario
+- Genera un nuevo token si es necesario (usa fine-grained tokens con permisos mínimos)
 
 #### **Error: "No se pudo crear repositorio"**
 - Verifica que tengas permisos para crear repositorios
@@ -90,6 +91,7 @@ favoritos/
 ### 8. Seguridad
 
 - 🔐 **Token privado**: Nunca compartas tu token personal
+- 🎯 **Permisos mínimos**: Usa un token fine-grained con acceso solo al repositorio `bookmarks` y únicamente permiso "Contents: Read and write"
 - 🔒 **Repositorio privado**: Solo tú puedes acceder a tus favoritos
 - 🛡️ **Datos locales**: Los favoritos también se guardan localmente
 - 🔄 **Sincronización segura**: Usa HTTPS para todas las comunicaciones

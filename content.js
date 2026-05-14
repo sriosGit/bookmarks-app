@@ -90,5 +90,9 @@ function extractPageData() {
         }
     }
 
+    // Estimate word count from visible text for reading-time display
+    const bodyText = document.body ? document.body.innerText || '' : '';
+    data.wordCount = bodyText.trim().split(/\s+/).filter(w => w.length > 0).length;
+
     return data;
 } 

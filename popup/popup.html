@@ -1,178 +1,230 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bookmarks App</title>
-    <link rel="stylesheet" href="popup.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bookmarks</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <h1 class="title">📚 Bookmarks</h1>
-            <div class="header-actions">
-                <button id="saveCurrent" class="save-btn">💾 Guardar</button>
-            </div>
-        </header>
 
-        <!-- GitHub Status -->
-        <div id="githubStatus" class="github-status" style="display: none;">
-            <div class="github-info">
-                <span id="githubUser" class="github-user"></span>
-                <span id="lastSync" class="last-sync"></span>
-            </div>
-            <div class="github-actions">
-                <button id="connectGitHub" class="github-btn connect">🔗 Conectar</button>
-                <button id="disconnectGitHub" class="github-btn disconnect" style="display: none;">🔌 Desconectar</button>
-            </div>
-        </div>
+<div class="app">
 
-        <!-- Tabs -->
-        <div class="tabs-container">
-            <div class="tabs">
-                <button class="tab-btn active" data-tab="bookmarks">📖 Favoritos</button>
-                <button class="tab-btn" data-tab="tags">🏷️ Etiquetas</button>
-                <button class="tab-btn" data-tab="sync">☁️ Sincronizar</button>
-            </div>
-        </div>
+  <!-- ── Header ───────────────────────────────────────────── -->
+  <header class="rf-header">
+    <div class="rf-brand">
+      <div class="rf-logomark"></div>
+      <span class="rf-wordmark">Bookmarks</span>
+      <span class="rf-count" id="bookmarkCount">0</span>
+    </div>
+    <div class="rf-header-actions">
+      <button class="rf-icon-btn" id="themeToggle" title="Toggle theme">
+        <!-- icon injected by JS -->
+      </button>
+      <button class="rf-icon-btn" id="syncBtn" title="Sync">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg>
+      </button>
+      <button class="rf-icon-btn" id="settingsBtn" title="Settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
 
-        <!-- Bookmarks Tab -->
-        <div id="bookmarksTab" class="tab-content active">
-            <!-- Search -->
-            <div class="search-container">
-                <input type="text" id="searchInput" placeholder="🔍 Buscar en favoritos..." class="search-input">
-            </div>
+  <!-- ── Save bar ──────────────────────────────────────────── -->
+  <div class="rf-save-row">
+    <div class="rf-current-page">
+      <div class="rf-fav" id="currentFav"></div>
+      <div class="rf-current-info">
+        <div class="rf-current-title" id="currentTitle">Loading...</div>
+        <div class="rf-current-domain" id="currentDomain"></div>
+      </div>
+    </div>
+    <button class="rf-save-btn" id="saveCurrentBtn">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>Save</span>
+    </button>
+  </div>
 
-            <!-- Bookmarks list -->
-            <div class="bookmarks-container">
-                <div id="bookmarksList" class="bookmarks-list">
-                    <!-- Bookmarks will be populated here -->
-                </div>
-            </div>
+  <!-- ── Search toolbar ────────────────────────────────────── -->
+  <div class="rf-toolbar">
+    <div class="rf-search">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="searchInput" type="text" placeholder="Search bookmarks" autocomplete="off" spellcheck="false">
+    </div>
+  </div>
 
-            <!-- Empty state -->
-            <div id="emptyState" class="empty-state" style="display: none;">
-                <p>📖 No hay favoritos guardados</p>
-                <p>Haz clic en "Guardar" para añadir la página actual</p>
-            </div>
-        </div>
+  <!-- ── Tag chips ─────────────────────────────────────────── -->
+  <div class="rf-tags-row" id="tagsRow"></div>
 
-        <!-- Tags Tab -->
-        <div id="tagsTab" class="tab-content">
-            <!-- Tags filter -->
-            <div class="tags-container">
-                <h3 class="section-title">🏷️ Selecciona etiquetas para filtrar</h3>
-                <div id="tagsList" class="tags-list">
-                    <!-- Tags will be populated here -->
-                </div>
-            </div>
+  <!-- ── Bookmark list ─────────────────────────────────────── -->
+  <div class="rf-list" id="bookmarkList"></div>
 
-            <!-- Filtered bookmarks -->
-            <div class="bookmarks-container">
-                <div id="filteredBookmarksList" class="bookmarks-list">
-                    <!-- Filtered bookmarks will be populated here -->
-                </div>
-            </div>
+  <!-- ── Footer ───────────────────────────────────────────── -->
+  <footer class="rf-footer">
+    <div class="rf-sync-status">
+      <span class="rf-sync-dot" id="syncDot"></span>
+      <span id="syncLabel">Synced</span>
+    </div>
+    <span class="rf-kbd" id="kbdHint">⌘K</span>
+  </footer>
 
-            <!-- Empty filtered state -->
-            <div id="emptyFilteredState" class="empty-state" style="display: none;">
-                <p>🔍 No se encontraron favoritos</p>
-                <p>Prueba seleccionando otras etiquetas</p>
-            </div>
-        </div>
+</div>
 
-        <!-- Sync Tab -->
-        <div id="syncTab" class="tab-content">
-            <div class="sync-container">
-                <h3 class="section-title">☁️ Sincronización con GitHub</h3>
-                
-                <!-- GitHub Connection Status -->
-                <div id="githubConnectionStatus" class="connection-status">
-                    <div class="status-indicator">
-                        <span id="connectionIcon" class="status-icon">🔴</span>
-                        <span id="connectionText" class="status-text">Desconectado</span>
-                    </div>
-                </div>
+<!-- ── Settings panel (slides over main UI) ─────────────── -->
+<div class="rf-settings-panel hidden" id="settingsPanel">
+  <header class="rf-settings-header">
+    <span class="rf-settings-title">Settings &amp; Sync</span>
+    <button class="rf-icon-btn" id="closeSettings" title="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </header>
+  <div class="rf-settings-body">
 
-                <!-- GitHub Actions -->
-                <div class="sync-actions">
-                    <button id="connectGitHubBtn" class="action-button primary">
-                        🔗 Conectar con GitHub
-                    </button>
-                    <button id="disconnectGitHubBtn" class="action-button secondary" style="display: none;">
-                        🔌 Desconectar
-                    </button>
-                </div>
-
-                <!-- Repository Selection -->
-                <div id="repoSelection" class="repo-selection-container" style="display: none;">
-                    <h4>📁 Seleccionar Repositorio</h4>
-                    <div class="repo-info">
-                        <p id="repoStatus" class="repo-status">Verificando repositorio...</p>
-                    </div>
-                    <div class="repo-actions">
-                        <button id="selectRepo" class="action-button secondary">
-                            📁 Cambiar Repositorio
-                        </button>
-                        <button id="createRepo" class="action-button primary">
-                            ➕ Crear Nuevo Repositorio
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Repository List Modal -->
-                <div id="repoListModal" class="modal-overlay" style="display: none;">
-                    <div class="modal-content">
-                        <h3>📁 Seleccionar Repositorio</h3>
-                        <div id="repoList" class="repo-list">
-                            <!-- Repositorios se cargarán aquí -->
-                        </div>
-                        <div class="modal-actions">
-                            <button id="cancelRepoSelection" class="action-button secondary">Cancelar</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Sync Actions -->
-                <div id="syncActions" class="sync-actions-container" style="display: none;">
-                    <h4>Sincronización</h4>
-                    <div class="sync-buttons">
-                        <button id="syncFromGitHub" class="sync-button">
-                            ⬇️ Descargar desde GitHub
-                        </button>
-                        <button id="syncToGitHub" class="sync-button">
-                            ⬆️ Subir a GitHub
-                        </button>
-                        <button id="fullSync" class="sync-button primary">
-                            🔄 Sincronización completa
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Sync Info -->
-                <div id="syncInfo" class="sync-info" style="display: none;">
-                    <h4>Información de sincronización</h4>
-                    <div class="info-item">
-                        <span class="info-label">Usuario:</span>
-                        <span id="githubUsername" class="info-value"></span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Repositorio:</span>
-                        <span id="githubRepo" class="info-value"></span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Última sincronización:</span>
-                        <span id="lastSyncTime" class="info-value"></span>
-                    </div>
-                </div>
-            </div>
-        </div>
+    <div class="provider-selector">
+      <button class="provider-btn active" data-provider="github">GitHub</button>
+      <button class="provider-btn" data-provider="localfile">Local File</button>
+      <button class="provider-btn" data-provider="googledrive">Google Drive</button>
     </div>
 
-    <!-- Scripts -->
-    <script src="../services/githubService.js"></script>
-    <script src="../services/githubAuth.js"></script>
-    <script src="popup.js"></script>
+    <!-- GitHub Section -->
+    <div id="githubSection" class="provider-section sync-container">
+      <div class="connection-status">
+        <div class="status-indicator">
+          <span id="connectionIcon" class="status-icon">🔴</span>
+          <span id="connectionText" class="status-text">Disconnected</span>
+        </div>
+      </div>
+
+      <div class="sync-actions">
+        <button id="connectGitHubBtn" class="action-button primary">Connect to GitHub</button>
+        <button id="disconnectGitHubBtn" class="action-button secondary" style="display:none">Disconnect</button>
+      </div>
+
+      <div id="repoSelection" class="repo-selection-container" style="display:none">
+        <h4>Repository</h4>
+        <div class="repo-info">
+          <p id="repoStatus" class="repo-status">Checking repository...</p>
+        </div>
+        <div class="repo-actions">
+          <button id="selectRepo" class="action-button secondary">Change Repo</button>
+          <button id="createRepo" class="action-button primary">New Repo</button>
+        </div>
+      </div>
+
+      <div id="repoListModal" class="modal-overlay" style="display:none">
+        <div class="modal-content">
+          <h3>Select Repository</h3>
+          <div id="repoList" class="repo-list"></div>
+          <div class="modal-actions">
+            <button id="cancelRepoSelection" class="action-button secondary">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="syncActions" class="sync-actions-container" style="display:none">
+        <h4>Synchronize</h4>
+        <div class="sync-buttons">
+          <button id="syncFromGitHub" class="sync-button">Download from GitHub</button>
+          <button id="syncToGitHub" class="sync-button">Upload to GitHub</button>
+          <button id="fullSync" class="sync-button primary">Full sync</button>
+        </div>
+      </div>
+
+      <div id="syncInfo" class="sync-info" style="display:none">
+        <h4>Sync Info</h4>
+        <div class="info-item">
+          <span class="info-label">User</span>
+          <span id="githubUsername" class="info-value"></span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Repository</span>
+          <span id="githubRepo" class="info-value"></span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Last sync</span>
+          <span id="lastSyncTime" class="info-value">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Local File Section -->
+    <div id="localFileSection" class="provider-section sync-container" style="display:none">
+      <div class="connection-status">
+        <div class="status-indicator">
+          <span id="localFileIcon" class="status-icon">📄</span>
+          <span id="localFileText" class="status-text">No file selected</span>
+        </div>
+      </div>
+
+      <div id="localFilePickActions" class="sync-actions">
+        <button id="pickLocalFileBtn" class="action-button primary">Open existing file</button>
+        <button id="createLocalFileBtn" class="action-button secondary">Create new file</button>
+      </div>
+
+      <div id="localFileSyncActions" class="sync-actions-container" style="display:none">
+        <h4>Synchronize</h4>
+        <div class="sync-buttons">
+          <button id="syncFromLocalFile" class="sync-button">Import from file</button>
+          <button id="syncToLocalFile" class="sync-button">Export to file</button>
+          <button id="fullSyncLocalFile" class="sync-button primary">Full sync</button>
+        </div>
+      </div>
+
+      <div class="sync-actions" style="margin-top:8px">
+        <button id="clearLocalFileBtn" class="action-button secondary" style="display:none">Change file</button>
+      </div>
+    </div>
+
+    <!-- Google Drive Section -->
+    <div id="googleDriveSection" class="provider-section sync-container" style="display:none">
+
+      <div id="driveSetupWarning" class="drive-setup-warning" style="display:none">
+        Google Drive requires setup. See <strong>GOOGLE_DRIVE_SETUP.md</strong>.
+      </div>
+
+      <div class="connection-status">
+        <div class="status-indicator">
+          <span id="driveConnectionIcon" class="status-icon">🔴</span>
+          <span id="driveConnectionText" class="status-text">Disconnected</span>
+        </div>
+      </div>
+
+      <div class="sync-actions">
+        <button id="connectDriveBtn" class="action-button primary">Connect Google Drive</button>
+        <button id="disconnectDriveBtn" class="action-button secondary" style="display:none">Disconnect</button>
+      </div>
+
+      <div id="driveFilePickActions" class="sync-actions" style="display:none">
+        <button id="createDriveFileBtn" class="action-button primary">Create file in Drive</button>
+        <button id="selectDriveFileBtn" class="action-button secondary">Select existing file</button>
+      </div>
+
+      <div id="driveSyncActions" class="sync-actions-container" style="display:none">
+        <h4>Synchronize</h4>
+        <div class="sync-buttons">
+          <button id="syncFromDrive" class="sync-button">Import from Drive</button>
+          <button id="syncToDrive" class="sync-button">Export to Drive</button>
+          <button id="fullSyncDrive" class="sync-button primary">Full sync</button>
+        </div>
+      </div>
+
+      <div class="sync-actions" style="margin-top:8px">
+        <button id="clearDriveFileBtn" class="action-button secondary" style="display:none">Change file</button>
+      </div>
+
+    </div>
+
+  </div>
+</div>
+
+<script src="../services/githubService.js"></script>
+<script src="../services/githubAuth.js"></script>
+<script src="../services/localFileService.js"></script>
+<script src="../services/googleDriveService.js"></script>
+<script src="../services/googleDriveAuth.js"></script>
+<script src="popup.js"></script>
 </body>
-</html> 
+</html>

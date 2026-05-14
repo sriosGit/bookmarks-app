@@ -1,29 +1,29 @@
-// Bookmark data structure
 class Bookmark {
-  constructor(url, title, description = "", tags = [], timestamp = Date.now()) {
-    this.id = this.generateId();
+  constructor(url, title, description = '', tags = [], timestamp = Date.now(), wordCount = 0) {
+    this.id = Date.now().toString(36) + Math.random().toString(36).substr(2);
     this.url = url;
     this.title = title;
     this.description = description;
     this.tags = tags;
     this.timestamp = timestamp;
-  }
-
-  generateId() {
-    return Date.now().toString(36) + Math.random().toString(36).substr(2);
+    this.wordCount = wordCount;
   }
 }
 
-// Main App Class
 class BookmarksApp {
   constructor() {
     this.bookmarks = [];
-    this.filteredBookmarks = [];
-    this.activeTags = new Set();
-    this.searchTerm = "";
-    this.currentTab = "bookmarks";
+    this.activeTag = null;
+    this.searchTerm = '';
+    this._searchTimer = null;
 
-    // GitHub sync properties
+    // Theme
+    this.theme = 'light';
+
+    // Sync provider
+    this.currentSyncProvider = 'github';
+
+    // GitHub
     this.githubService = null;
     this.githubAuth = null;
     this.isGitHubConnected = false;
@@ -31,199 +31,325 @@ class BookmarksApp {
     this.repositoryStatus = null;
     this.availableRepositories = [];
 
+    // Local File
+    this.localFileService = null;
+    this.hasLocalFile = false;
+
+    // Google Drive
+    this.googleDriveService = null;
+    this.googleDriveAuth = null;
+    this.isGoogleDriveConnected = false;
+    this.googleDriveToken = null;
+
+    // Pending confirm-delete id + timer
+    this._deleteConfirmId = null;
+    this._deleteConfirmTimer = null;
+
     this.init();
   }
 
   async init() {
-    // Inicializar servicios de GitHub
     this.githubService = new GitHubService();
     this.githubAuth = new GitHubAuth();
+    this.localFileService = new LocalFileService();
+    this.googleDriveService = new GoogleDriveService();
+    this.googleDriveAuth = new GoogleDriveAuth();
 
-    // Verificar conexión con GitHub
+    // Theme — persisted, fallback to system preference
+    const stored = await chrome.storage.local.get(['theme', 'currentSyncProvider']);
+    if (stored.theme) {
+      this.theme = stored.theme;
+    } else {
+      this.theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.setAttribute('data-theme', this.theme);
+
+    if (stored.currentSyncProvider) this.currentSyncProvider = stored.currentSyncProvider;
+
+    // GitHub
     await this.checkGitHubConnection();
+    if (this.isGitHubConnected) await this.checkRepositoryStatus();
 
-    // Verificar estado del repositorio si está conectado
-    if (this.isGitHubConnected) {
-      await this.checkRepositoryStatus();
+    // Local File
+    this.hasLocalFile = await this.localFileService.hasStoredFile();
+
+    // Google Drive cached token
+    const cachedToken = await this.googleDriveAuth.getToken();
+    if (cachedToken) {
+      this.googleDriveToken = cachedToken;
+      this.isGoogleDriveConnected = true;
     }
 
     await this.loadBookmarks();
     this.setupEventListeners();
+    this.populateSaveBar();
     this.render();
   }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Save bar — show the active tab
+  // ─────────────────────────────────────────────────────────────────
+
+  async populateSaveBar() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab) return;
+
+      const titleEl = document.getElementById('currentTitle');
+      const domainEl = document.getElementById('currentDomain');
+      const favEl = document.getElementById('currentFav');
+
+      titleEl.textContent = tab.title || tab.url;
+      try {
+        domainEl.textContent = new URL(tab.url).hostname;
+      } catch { domainEl.textContent = ''; }
+
+      const faviconUrl = this.faviconUrl(tab.url);
+      favEl.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = faviconUrl;
+      img.alt = '';
+      img.onerror = () => {
+        favEl.innerHTML = '';
+        const letter = document.createElement('div');
+        letter.className = 'rf-fav-letter';
+        letter.style.background = this.letterColor(tab.title || tab.url);
+        letter.textContent = (tab.title || tab.url || '?')[0].toUpperCase();
+        favEl.appendChild(letter);
+      };
+      favEl.appendChild(img);
+    } catch (e) {
+      console.error('populateSaveBar error', e);
+    }
+  }
+
+  faviconUrl(url) {
+    try {
+      const encoded = encodeURIComponent(url);
+      return chrome.runtime.getURL(`_favicon/?pageUrl=${encoded}&size=28`);
+    } catch {
+      return '';
+    }
+  }
+
+  letterColor(seed) {
+    let h = 0;
+    for (let i = 0; i < seed.length; i++) h = ((h << 5) - h + seed.charCodeAt(i)) | 0;
+    return `oklch(0.55 0.14 ${Math.abs(h) % 360})`;
+  }
+
+  readingTime(wordCount) {
+    if (!wordCount || wordCount < 1) return null;
+    const mins = Math.max(1, Math.round(wordCount / 200));
+    return `${mins} min`;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Event listeners
+  // ─────────────────────────────────────────────────────────────────
 
   setupEventListeners() {
-    // Save current page button
-    document.getElementById("saveCurrent").addEventListener("click", () => {
-      this.saveCurrentPage();
+    // Theme toggle
+    document.getElementById('themeToggle').addEventListener('click', () => this.toggleTheme());
+
+    // Sync button → quick sync with active provider
+    document.getElementById('syncBtn').addEventListener('click', () => this.quickSync());
+
+    // Settings panel
+    document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
+    document.getElementById('closeSettings').addEventListener('click', () => this.closeSettings());
+
+    // Save bar
+    document.getElementById('saveCurrentBtn').addEventListener('click', () => this.saveCurrentPage());
+
+    // Search — debounced
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => {
+        this.searchTerm = e.target.value.toLowerCase();
+        this.renderList();
+      }, 80);
     });
 
-    // Search input
-    document.getElementById("searchInput").addEventListener("input", (e) => {
-      this.searchTerm = e.target.value.toLowerCase();
-      this.filterBookmarks();
-      this.render();
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => this.handleKeydown(e));
+
+    // ⌘K pill focuses search
+    document.getElementById('kbdHint').addEventListener('click', () => {
+      document.getElementById('searchInput').focus();
     });
 
-    // Tab buttons
-    document.querySelectorAll(".tab-btn").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        this.switchTab(e.target.dataset.tab);
-      });
+    // Provider selector
+    document.querySelectorAll('.provider-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => this.switchSyncProvider(e.currentTarget.dataset.provider));
     });
 
-    // GitHub connection buttons
-    document
-      .getElementById("connectGitHubBtn")
-      .addEventListener("click", () => {
-        this.connectToGitHub();
-      });
+    // GitHub
+    document.getElementById('connectGitHubBtn').addEventListener('click', () => this.connectToGitHub());
+    document.getElementById('disconnectGitHubBtn').addEventListener('click', () => this.disconnectFromGitHub());
+    document.getElementById('syncFromGitHub').addEventListener('click', () => this.syncFromGitHub());
+    document.getElementById('syncToGitHub').addEventListener('click', () => this.syncToGitHub());
+    document.getElementById('fullSync').addEventListener('click', () => this.fullSync());
+    document.getElementById('selectRepo').addEventListener('click', () => this.showRepositoryList());
+    document.getElementById('createRepo').addEventListener('click', () => this.createNewRepository());
+    document.getElementById('cancelRepoSelection').addEventListener('click', () => this.hideRepositoryList());
 
-    document
-      .getElementById("disconnectGitHubBtn")
-      .addEventListener("click", () => {
-        this.disconnectFromGitHub();
-      });
+    // Local File
+    document.getElementById('pickLocalFileBtn').addEventListener('click', () => this.syncLocalFilePickFile());
+    document.getElementById('createLocalFileBtn').addEventListener('click', () => this.syncLocalFileCreate());
+    document.getElementById('syncFromLocalFile').addEventListener('click', () => this.syncLocalFileFrom());
+    document.getElementById('syncToLocalFile').addEventListener('click', () => this.syncLocalFileTo());
+    document.getElementById('fullSyncLocalFile').addEventListener('click', () => this.fullSyncLocalFile());
+    document.getElementById('clearLocalFileBtn').addEventListener('click', () => this.clearLocalFile());
 
-    // GitHub sync buttons
-    document.getElementById("syncFromGitHub").addEventListener("click", () => {
-      this.syncFromGitHub();
-    });
-
-    document.getElementById("syncToGitHub").addEventListener("click", () => {
-      this.syncToGitHub();
-    });
-
-    document.getElementById("fullSync").addEventListener("click", () => {
-      this.fullSync();
-    });
-
-    // Repository selection buttons
-    document.getElementById("selectRepo").addEventListener("click", () => {
-      this.showRepositoryList();
-    });
-
-    document.getElementById("createRepo").addEventListener("click", () => {
-      this.createNewRepository();
-    });
-
-    document
-      .getElementById("cancelRepoSelection")
-      .addEventListener("click", () => {
-        this.hideRepositoryList();
-      });
+    // Google Drive
+    document.getElementById('connectDriveBtn').addEventListener('click', () => this.connectToGoogleDrive());
+    document.getElementById('disconnectDriveBtn').addEventListener('click', () => this.disconnectFromGoogleDrive());
+    document.getElementById('createDriveFileBtn').addEventListener('click', () => this.createDriveFile());
+    document.getElementById('selectDriveFileBtn').addEventListener('click', () => this.selectDriveFile());
+    document.getElementById('syncFromDrive').addEventListener('click', () => this.syncDriveFrom());
+    document.getElementById('syncToDrive').addEventListener('click', () => this.syncDriveTo());
+    document.getElementById('fullSyncDrive').addEventListener('click', () => this.fullSyncDrive());
+    document.getElementById('clearDriveFileBtn').addEventListener('click', () => this.clearDriveFile());
   }
 
-  switchTab(tabName) {
-    // Update tab buttons
-    document.querySelectorAll(".tab-btn").forEach((btn) => {
-      btn.classList.remove("active");
-    });
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add("active");
+  handleKeydown(e) {
+    const key = e.key;
+    const meta = e.metaKey || e.ctrlKey;
+    const searchInput = document.getElementById('searchInput');
+    const settingsPanel = document.getElementById('settingsPanel');
 
-    // Update tab content
-    document.querySelectorAll(".tab-content").forEach((content) => {
-      content.classList.remove("active");
-    });
-    document.getElementById(`${tabName}Tab`).classList.add("active");
-
-    this.currentTab = tabName;
-
-    // Reset search when switching to bookmarks tab
-    if (tabName === "bookmarks") {
-      this.searchTerm = "";
-      document.getElementById("searchInput").value = "";
+    if (meta && key === 'k') {
+      e.preventDefault();
+      searchInput.focus();
+      return;
     }
 
-    // Show all bookmarks when entering tags tab
-    if (tabName === "tags") {
-      this.activeTags.clear();
-      this.filteredBookmarks = [...this.bookmarks];
+    if (key === 'Escape') {
+      if (!settingsPanel.classList.contains('hidden')) {
+        this.closeSettings();
+        return;
+      }
+      if (this.searchTerm) {
+        searchInput.value = '';
+        this.searchTerm = '';
+        this.renderList();
+        return;
+      }
+      if (this.activeTag !== null) {
+        this.activeTag = null;
+        this.renderTags();
+        this.renderList();
+      }
     }
-
-    this.render();
   }
 
-   async saveCurrentPage() {
-     try {
-       const saveBtn = document.getElementById("saveCurrent");
-       const originalText = saveBtn.textContent;
-       saveBtn.textContent = "⏳ Guardando...";
-       saveBtn.disabled = true;
+  // ─────────────────────────────────────────────────────────────────
+  //  Theme
+  // ─────────────────────────────────────────────────────────────────
 
-       // Get current tab info
-       const [tab] = await chrome.tabs.query({
-         active: true,
-         currentWindow: true,
-       });
+  async toggleTheme() {
+    this.theme = this.theme === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', this.theme);
+    await chrome.storage.local.set({ theme: this.theme });
+    this.renderThemeIcon();
+  }
 
-       let pageData = { title: tab.title, description: "", tags: [] };
+  renderThemeIcon() {
+    const btn = document.getElementById('themeToggle');
+    if (this.theme === 'light') {
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+      btn.title = 'Switch to dark';
+    } else {
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"/></svg>`;
+      btn.title = 'Switch to light';
+    }
+  }
 
-       // Try to get page metadata from content script
-       try {
-         const contentScriptData = await chrome.tabs.sendMessage(tab.id, {
-           action: "getPageData",
-         });
-         if (contentScriptData) {
-           pageData = contentScriptData;
-         }
-       } catch (contentScriptError) {
-         console.log("Content script not available, using basic tab info");
-         // Content script not available, use basic tab info
-       }
+  // ─────────────────────────────────────────────────────────────────
+  //  Settings panel
+  // ─────────────────────────────────────────────────────────────────
 
-       const bookmark = new Bookmark(
-         tab.url,
-         pageData.title || tab.title,
-         pageData.description || "",
-         pageData.tags || []
-       );
+  openSettings() {
+    document.getElementById('settingsPanel').classList.remove('hidden');
+    this.renderSyncTab();
+  }
 
-       const result = await this.addBookmark(bookmark);
+  closeSettings() {
+    document.getElementById('settingsPanel').classList.add('hidden');
+  }
 
-       // Show success or duplicate feedback
-       saveBtn.textContent = result.duplicate ? "⚠️ Ya guardado" : "✅ Guardado!";
-       setTimeout(() => {
-         saveBtn.textContent = originalText;
-         saveBtn.disabled = false;
-       }, 2000);
-     } catch (error) {
-       console.error("Error saving bookmark:", error);
-       const saveBtn = document.getElementById("saveCurrent");
-       saveBtn.textContent = "❌ Error";
-       setTimeout(() => {
-         saveBtn.textContent = "💾 Guardar";
-         saveBtn.disabled = false;
-       }, 2000);
-     }
-   }
+  // ─────────────────────────────────────────────────────────────────
+  //  Save / Add bookmark
+  // ─────────────────────────────────────────────────────────────────
+
+  async saveCurrentPage() {
+    const btn = document.getElementById('saveCurrentBtn');
+    const btnText = btn.querySelector('span');
+    const original = btnText.textContent;
+    btnText.textContent = 'Saving…';
+    btn.disabled = true;
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      let pageData = { title: tab.title, description: '', tags: [], wordCount: 0 };
+
+      try {
+        const data = await chrome.tabs.sendMessage(tab.id, { action: 'getPageData' });
+        if (data) pageData = data;
+      } catch {
+        // content script unavailable — use basic tab info
+      }
+
+      const bookmark = new Bookmark(
+        tab.url,
+        pageData.title || tab.title,
+        pageData.description || '',
+        pageData.tags || [],
+        Date.now(),
+        pageData.wordCount || 0
+      );
+
+      const result = await this.addBookmark(bookmark);
+      btnText.textContent = result.duplicate ? 'Already saved' : 'Saved!';
+      setTimeout(() => { btnText.textContent = original; btn.disabled = false; }, 2000);
+    } catch (err) {
+      console.error('Save error', err);
+      btnText.textContent = 'Error';
+      setTimeout(() => { btnText.textContent = original; btn.disabled = false; }, 2000);
+    }
+  }
 
   async addBookmark(bookmark) {
     const isDuplicate = this.bookmarks.some((b) => b.url === bookmark.url);
     if (isDuplicate) {
-      this.showNotification("⚠️ Esta página ya está guardada", "warning");
+      this.showNotification('Already saved', 'warning');
       return { added: false, duplicate: true };
     }
     this.bookmarks.unshift(bookmark);
     await this.saveBookmarks();
-    this.filterBookmarks();
     this.render();
     return { added: true, duplicate: false };
   }
 
-  async removeBookmark(bookmarkId) {
-    this.bookmarks = this.bookmarks.filter((b) => b.id !== bookmarkId);
+  async removeBookmark(id) {
+    this.bookmarks = this.bookmarks.filter((b) => b.id !== id);
+    this._deleteConfirmId = null;
+    this._deleteConfirmTimer = null;
     await this.saveBookmarks();
-    this.filterBookmarks();
     this.render();
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  //  Storage
+  // ─────────────────────────────────────────────────────────────────
+
   async loadBookmarks() {
     try {
-      const result = await chrome.storage.local.get(["bookmarks"]);
+      const result = await chrome.storage.local.get(['bookmarks', 'lastSync']);
       this.bookmarks = result.bookmarks || [];
-    } catch (error) {
-      console.error("Error loading bookmarks:", error);
+      if (result.lastSync) this.lastSync = result.lastSync;
+    } catch {
       this.bookmarks = [];
     }
   }
@@ -231,352 +357,382 @@ class BookmarksApp {
   async saveBookmarks() {
     try {
       await chrome.storage.local.set({ bookmarks: this.bookmarks });
-    } catch (error) {
-      console.error("Error saving bookmarks:", error);
+    } catch (e) {
+      console.error('saveBookmarks error', e);
     }
   }
 
-  filterBookmarks() {
-    this.filteredBookmarks = this.bookmarks.filter((bookmark) => {
-      // Search filter (only in bookmarks tab)
-      const matchesSearch =
-        this.currentTab !== "bookmarks" ||
-        !this.searchTerm ||
-        bookmark.title.toLowerCase().includes(this.searchTerm) ||
-        bookmark.description.toLowerCase().includes(this.searchTerm) ||
-        bookmark.url.toLowerCase().includes(this.searchTerm) ||
-        bookmark.tags.some((tag) =>
-          tag.toLowerCase().includes(this.searchTerm)
-        );
-
-      // Tags filter (only in tags tab)
-      const matchesTags =
-        this.currentTab !== "tags" ||
-        this.activeTags.size === 0 ||
-        bookmark.tags.some((tag) => this.activeTags.has(tag));
-
-      return matchesSearch && matchesTags;
-    });
-  }
+  // ─────────────────────────────────────────────────────────────────
+  //  Render
+  // ─────────────────────────────────────────────────────────────────
 
   render() {
-    if (this.currentTab === "bookmarks") {
-      this.renderBookmarks();
-      this.renderEmptyState();
-    } else if (this.currentTab === "tags") {
-      this.renderTags();
-      this.renderFilteredBookmarks();
-      this.renderEmptyFilteredState();
-    } else if (this.currentTab === "sync") {
-      this.renderSyncTab();
-    }
+    this.renderThemeIcon();
+    document.getElementById('bookmarkCount').textContent = this.bookmarks.length;
+    this.renderSyncStatus();
+    this.renderTags();
+    this.renderList();
   }
 
-  renderBookmarks() {
-    const bookmarksList = document.getElementById("bookmarksList");
-    bookmarksList.innerHTML = "";
-
-    // Show all bookmarks or filtered by search
-    const bookmarksToShow = this.searchTerm
-      ? this.filteredBookmarks
-      : this.bookmarks;
-
-    bookmarksToShow.forEach((bookmark) => {
-      const bookmarkElement = this.createBookmarkElement(bookmark);
-      bookmarksList.appendChild(bookmarkElement);
-    });
-  }
-
-  renderFilteredBookmarks() {
-    const filteredBookmarksList = document.getElementById(
-      "filteredBookmarksList"
-    );
-    filteredBookmarksList.innerHTML = "";
-
-    // In tags tab, show all bookmarks if no tags selected, otherwise show filtered
-    const bookmarksToShow =
-      this.activeTags.size === 0 ? this.bookmarks : this.filteredBookmarks;
-
-    bookmarksToShow.forEach((bookmark) => {
-      const bookmarkElement = this.createBookmarkElement(bookmark);
-      filteredBookmarksList.appendChild(bookmarkElement);
-    });
-  }
-
-  createBookmarkElement(bookmark) {
-    const div = document.createElement("div");
-    div.className = "bookmark-item";
-
-    // Create the HTML structure without inline event handlers
-    div.innerHTML = `
-            <div class="bookmark-title">${this.escapeHtml(bookmark.title)}</div>
-            <div class="bookmark-url">${this.escapeHtml(bookmark.url)}</div>
-            ${
-              bookmark.description
-                ? `<div class="bookmark-description">${this.escapeHtml(
-                    bookmark.description
-                  )}</div>`
-                : ""
-            }
-            ${
-              bookmark.tags.length > 0
-                ? `
-                <div class="bookmark-tags">
-                    ${bookmark.tags
-                      .map(
-                        (tag) =>
-                          `<span class="bookmark-tag">${this.escapeHtml(
-                            tag
-                          )}</span>`
-                      )
-                      .join("")}
-                </div>
-            `
-                : ""
-            }
-            <div class="bookmark-actions">
-                <button class="action-btn copy-btn" title="Copiar enlace">📋</button>
-                <button class="action-btn open-btn" title="Abrir en nueva pestaña">🔗</button>
-                <button class="action-btn delete-btn" title="Eliminar">🗑️</button>
-            </div>
-        `;
-
-    // Add event listeners for action buttons
-    const copyBtn = div.querySelector(".copy-btn");
-    const openBtn = div.querySelector(".open-btn");
-    const deleteBtn = div.querySelector(".delete-btn");
-
-    copyBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.copyToClipboard(bookmark.url, copyBtn);
-    });
-
-    openBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.openBookmark(bookmark.url);
-    });
-
-    deleteBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.removeBookmark(bookmark.id);
-    });
-
-    // Add click handler to open bookmark (when clicking on the card)
-    div.addEventListener("click", () => {
-      this.openBookmark(bookmark.url);
-    });
-
-    return div;
-  }
-
-  async copyToClipboard(text, button) {
-    try {
-      // Try using the modern clipboard API
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        // Fallback for older browsers or non-secure contexts
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        textArea.style.top = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand("copy");
-        textArea.remove();
-      }
-
-      // Show success feedback
-      const originalText = button.textContent;
-      button.textContent = "✅";
-      button.style.background = "#d4edda";
-      button.style.color = "#155724";
-
-      setTimeout(() => {
-        button.textContent = originalText;
-        button.style.background = "";
-        button.style.color = "";
-      }, 1500);
-    } catch (error) {
-      console.error("Error copying to clipboard:", error);
-
-      // Show error feedback
-      const originalText = button.textContent;
-      button.textContent = "❌";
-      button.style.background = "#f8d7da";
-      button.style.color = "#721c24";
-
-      setTimeout(() => {
-        button.textContent = originalText;
-        button.style.background = "";
-        button.style.color = "";
-      }, 1500);
+  renderSyncStatus() {
+    const dot = document.getElementById('syncDot');
+    const label = document.getElementById('syncLabel');
+    if (this.lastSync) {
+      dot.className = 'rf-sync-dot';
+      const diff = Math.round((Date.now() - new Date(this.lastSync).getTime()) / 60000);
+      label.textContent = diff < 1 ? 'Synced just now' : `Synced · ${diff} min ago`;
+    } else {
+      dot.className = 'rf-sync-dot error';
+      label.textContent = 'Not synced';
     }
   }
 
   renderTags() {
-    const tagsList = document.getElementById("tagsList");
-    const allTags = new Set();
+    const row = document.getElementById('tagsRow');
+    row.innerHTML = '';
 
-    this.bookmarks.forEach((bookmark) => {
-      bookmark.tags.forEach((tag) => allTags.add(tag));
+    // Count tag frequency
+    const freq = {};
+    this.bookmarks.forEach((b) => {
+      (b.tags || []).forEach((t) => { freq[t] = (freq[t] || 0) + 1; });
     });
 
-    tagsList.innerHTML = "";
+    const sortedTags = Object.keys(freq).sort((a, b) => freq[b] - freq[a]);
+    if (sortedTags.length === 0) return;
 
-    if (allTags.size > 0) {
-      const allTagsBtn = document.createElement("span");
-      allTagsBtn.className = `tag ${
-        this.activeTags.size === 0 ? "active" : ""
-      }`;
-      allTagsBtn.textContent = "Todos";
-      allTagsBtn.addEventListener("click", () => {
-        this.activeTags.clear();
-        this.filterBookmarks();
-        this.render();
+    const allBtn = document.createElement('button');
+    allBtn.className = 'rf-chip' + (this.activeTag === null ? ' active' : '');
+    allBtn.textContent = 'All';
+    allBtn.addEventListener('click', () => {
+      this.activeTag = null;
+      this.renderTags();
+      this.renderList();
+    });
+    row.appendChild(allBtn);
+
+    sortedTags.forEach((tag) => {
+      const btn = document.createElement('button');
+      btn.className = 'rf-chip' + (this.activeTag === tag ? ' active' : '');
+      btn.textContent = tag;
+      btn.addEventListener('click', () => {
+        this.activeTag = this.activeTag === tag ? null : tag;
+        this.renderTags();
+        this.renderList();
       });
-      tagsList.appendChild(allTagsBtn);
+      row.appendChild(btn);
+    });
+  }
+
+  renderList() {
+    const listEl = document.getElementById('bookmarkList');
+    listEl.innerHTML = '';
+
+    const visible = this.bookmarks.filter((b) => {
+      if (this.activeTag && !(b.tags || []).includes(this.activeTag)) return false;
+      if (this.searchTerm) {
+        const hay = `${b.title} ${b.description} ${b.url}`.toLowerCase();
+        if (!hay.includes(this.searchTerm)) return false;
+      }
+      return true;
+    });
+
+    if (visible.length === 0) {
+      listEl.appendChild(this.makeEmptyState());
+      return;
     }
 
-    Array.from(allTags)
-      .sort()
-      .forEach((tag) => {
-        const tagElement = document.createElement("span");
-        tagElement.className = `tag ${
-          this.activeTags.has(tag) ? "active" : ""
-        }`;
-        tagElement.textContent = tag;
-        tagElement.addEventListener("click", () => {
-          if (this.activeTags.has(tag)) {
-            this.activeTags.delete(tag);
-          } else {
-            this.activeTags.add(tag);
+    visible.forEach((b) => listEl.appendChild(this.makeItem(b)));
+  }
+
+  makeEmptyState() {
+    const el = document.createElement('div');
+    el.className = 'rf-empty';
+    const hasFilter = this.activeTag || this.searchTerm;
+    el.innerHTML = `
+      <div class="rf-empty-logomark"></div>
+      <div class="rf-empty-title">${hasFilter ? 'No matches' : 'No bookmarks yet'}</div>
+      <div class="rf-empty-sub">${hasFilter ? 'Try a different search or tag' : 'Press Save to add this page'}</div>
+    `;
+    return el;
+  }
+
+  makeItem(b) {
+    const item = document.createElement('div');
+    item.className = 'rf-item';
+
+    // Favicon
+    const favWrap = document.createElement('div');
+    favWrap.className = 'rf-fav';
+    const img = document.createElement('img');
+    img.src = this.faviconUrl(b.url);
+    img.alt = '';
+    img.onerror = () => {
+      favWrap.innerHTML = '';
+      const letter = document.createElement('div');
+      letter.className = 'rf-fav-letter';
+      letter.style.background = this.letterColor(b.title || b.url);
+      letter.textContent = (b.title || b.url || '?')[0].toUpperCase();
+      favWrap.appendChild(letter);
+    };
+    favWrap.appendChild(img);
+
+    // Body
+    const body = document.createElement('div');
+    body.className = 'rf-item-body';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'rf-item-title';
+    titleEl.textContent = b.title || b.url;
+
+    const meta = document.createElement('div');
+    meta.className = 'rf-item-meta';
+    let domain = '';
+    try { domain = new URL(b.url).hostname; } catch { domain = b.url; }
+    const rt = this.readingTime(b.wordCount);
+    meta.innerHTML = `<span>${this.escapeHtml(domain)}</span>${rt ? `<span class="rf-dot">·</span><span>${rt}</span>` : ''}`;
+
+    body.appendChild(titleEl);
+    body.appendChild(meta);
+
+    // Remove button
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'rf-item-remove';
+    removeBtn.title = 'Remove';
+    removeBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this._deleteConfirmId === b.id) {
+        clearTimeout(this._deleteConfirmTimer);
+        this.removeBookmark(b.id);
+      } else {
+        // First click: show confirm state
+        if (this._deleteConfirmId) {
+          // Reset previous confirm
+          this._resetDeleteConfirm();
+        }
+        this._deleteConfirmId = b.id;
+        removeBtn.classList.add('confirm');
+        removeBtn.textContent = 'Confirm?';
+        this._deleteConfirmTimer = setTimeout(() => {
+          this._resetDeleteConfirm();
+          // Re-render item back to normal
+          if (removeBtn.isConnected) {
+            removeBtn.classList.remove('confirm');
+            removeBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
           }
-          this.filterBookmarks();
-          this.render();
-        });
-        tagsList.appendChild(tagElement);
-      });
+        }, 2000);
+      }
+    });
+
+    // Click row → open
+    item.addEventListener('click', () => this.openBookmark(b.url));
+
+    item.appendChild(favWrap);
+    item.appendChild(body);
+    item.appendChild(removeBtn);
+    return item;
   }
 
-  renderEmptyState() {
-    const emptyState = document.getElementById("emptyState");
-    const bookmarksList = document.getElementById("bookmarksList");
-    const bookmarksToShow = this.searchTerm
-      ? this.filteredBookmarks
-      : this.bookmarks;
-
-    if (bookmarksToShow.length === 0) {
-      emptyState.style.display = "block";
-      bookmarksList.style.display = "none";
-    } else {
-      emptyState.style.display = "none";
-      bookmarksList.style.display = "block";
-    }
-  }
-
-  renderEmptyFilteredState() {
-    const emptyFilteredState = document.getElementById("emptyFilteredState");
-    const filteredBookmarksList = document.getElementById(
-      "filteredBookmarksList"
-    );
-
-    // In tags tab, show empty state only if tags are selected and no results
-    const shouldShowEmpty =
-      this.activeTags.size > 0 && this.filteredBookmarks.length === 0;
-
-    if (shouldShowEmpty) {
-      emptyFilteredState.style.display = "block";
-      filteredBookmarksList.style.display = "none";
-    } else {
-      emptyFilteredState.style.display = "none";
-      filteredBookmarksList.style.display = "block";
-    }
+  _resetDeleteConfirm() {
+    clearTimeout(this._deleteConfirmTimer);
+    this._deleteConfirmId = null;
+    this._deleteConfirmTimer = null;
   }
 
   async openBookmark(url) {
     try {
       await chrome.tabs.create({ url });
-    } catch (error) {
-      console.error("Error opening bookmark:", error);
-    }
-  }
-
-  renderSyncTab() {
-    // Actualizar estado de conexión
-    const connectionIcon = document.getElementById("connectionIcon");
-    const connectionText = document.getElementById("connectionText");
-    const connectBtn = document.getElementById("connectGitHubBtn");
-    const disconnectBtn = document.getElementById("disconnectGitHubBtn");
-    const syncActions = document.getElementById("syncActions");
-    const syncInfo = document.getElementById("syncInfo");
-    const repoSelection = document.getElementById("repoSelection");
-
-    if (this.isGitHubConnected) {
-      connectionIcon.textContent = "🟢";
-      connectionText.textContent = "Conectado a GitHub";
-      connectBtn.style.display = "none";
-      disconnectBtn.style.display = "block";
-      syncInfo.style.display = "block";
-      repoSelection.style.display = "block";
-
-      // Actualizar información de sincronización
-      if (this.githubService && this.githubService.username) {
-        document.getElementById("githubUsername").textContent =
-          this.githubService.username;
-        document.getElementById(
-          "githubRepo"
-        ).textContent = `${this.githubService.username}/${this.githubService.repoName}`;
-      }
-
-      if (this.lastSync) {
-        const syncDate = new Date(this.lastSync);
-        document.getElementById("lastSyncTime").textContent =
-          syncDate.toLocaleString();
-      }
-
-      // Mostrar/ocultar opciones de sincronización basado en el estado del repositorio
-      this.updateRepositoryStatus();
-    } else {
-      connectionIcon.textContent = "🔴";
-      connectionText.textContent = "Desconectado";
-      connectBtn.style.display = "block";
-      disconnectBtn.style.display = "none";
-      syncActions.style.display = "none";
-      syncInfo.style.display = "none";
-      repoSelection.style.display = "none";
+    } catch (e) {
+      console.error(e);
     }
   }
 
   escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
   }
 
-  // ===== MÉTODOS DE GITHUB SYNC =====
+  // ─────────────────────────────────────────────────────────────────
+  //  Quick sync button (header)
+  // ─────────────────────────────────────────────────────────────────
 
-  // Verificar conexión con GitHub
+  async quickSync() {
+    const dot = document.getElementById('syncDot');
+    dot.className = 'rf-sync-dot syncing';
+    try {
+      if (this.currentSyncProvider === 'github' && this.isGitHubConnected) {
+        await this.fullSync();
+      } else if (this.currentSyncProvider === 'localfile' && this.hasLocalFile) {
+        await this.fullSyncLocalFile();
+      } else if (this.currentSyncProvider === 'googledrive' && this.isGoogleDriveConnected) {
+        await this.fullSyncDrive();
+      } else {
+        this.showNotification('No sync provider connected', 'warning');
+      }
+    } finally {
+      this.renderSyncStatus();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Notifications
+  // ─────────────────────────────────────────────────────────────────
+
+  showNotification(message, type = 'info') {
+    const el = document.createElement('div');
+    el.className = 'rf-notification';
+    const colors = {
+      success: 'oklch(0.52 0.14 145)',
+      error: 'oklch(0.52 0.18 25)',
+      warning: 'oklch(0.62 0.12 80)',
+      info: 'oklch(0.52 0.12 240)',
+    };
+    el.style.background = colors[type] || colors.info;
+    el.textContent = message;
+    document.body.appendChild(el);
+    setTimeout(() => {
+      if (el.parentNode) {
+        el.style.animation = 'slideOut 0.25s ease forwards';
+        setTimeout(() => el.parentNode && el.parentNode.removeChild(el), 280);
+      }
+    }, 3000);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Sync provider switching
+  // ─────────────────────────────────────────────────────────────────
+
+  async switchSyncProvider(provider) {
+    this.currentSyncProvider = provider;
+    await chrome.storage.local.set({ currentSyncProvider: provider });
+    document.querySelectorAll('.provider-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.provider === provider);
+    });
+    this.renderSyncTab();
+  }
+
+  renderSyncTab() {
+    document.getElementById('githubSection').style.display = this.currentSyncProvider === 'github' ? 'flex' : 'none';
+    document.getElementById('localFileSection').style.display = this.currentSyncProvider === 'localfile' ? 'flex' : 'none';
+    document.getElementById('googleDriveSection').style.display = this.currentSyncProvider === 'googledrive' ? 'flex' : 'none';
+
+    document.querySelectorAll('.provider-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.provider === this.currentSyncProvider);
+    });
+
+    if (this.currentSyncProvider === 'github') this._renderGitHubSection();
+    else if (this.currentSyncProvider === 'localfile') this._renderLocalFileSection();
+    else if (this.currentSyncProvider === 'googledrive') this._renderGoogleDriveSection();
+  }
+
+  _renderGitHubSection() {
+    const connectionIcon = document.getElementById('connectionIcon');
+    const connectionText = document.getElementById('connectionText');
+    const connectBtn = document.getElementById('connectGitHubBtn');
+    const disconnectBtn = document.getElementById('disconnectGitHubBtn');
+    const syncActions = document.getElementById('syncActions');
+    const syncInfo = document.getElementById('syncInfo');
+    const repoSelection = document.getElementById('repoSelection');
+
+    if (this.isGitHubConnected) {
+      connectionIcon.textContent = '🟢';
+      connectionText.textContent = 'Connected to GitHub';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'block';
+      syncInfo.style.display = 'block';
+      repoSelection.style.display = 'block';
+
+      if (this.githubService && this.githubService.username) {
+        document.getElementById('githubUsername').textContent = this.githubService.username;
+        document.getElementById('githubRepo').textContent = `${this.githubService.username}/${this.githubService.repoName}`;
+      }
+      if (this.lastSync) {
+        document.getElementById('lastSyncTime').textContent = new Date(this.lastSync).toLocaleString();
+      }
+      this.updateRepositoryStatus();
+    } else {
+      connectionIcon.textContent = '🔴';
+      connectionText.textContent = 'Disconnected';
+      connectBtn.style.display = 'block';
+      disconnectBtn.style.display = 'none';
+      syncActions.style.display = 'none';
+      syncInfo.style.display = 'none';
+      repoSelection.style.display = 'none';
+    }
+  }
+
+  async _renderLocalFileSection() {
+    const icon = document.getElementById('localFileIcon');
+    const text = document.getElementById('localFileText');
+    const pickActions = document.getElementById('localFilePickActions');
+    const syncActions = document.getElementById('localFileSyncActions');
+    const clearBtn = document.getElementById('clearLocalFileBtn');
+
+    if (this.hasLocalFile) {
+      const name = await this.localFileService.getStoredFileName();
+      icon.textContent = '📄';
+      text.textContent = name || 'File selected';
+      pickActions.style.display = 'none';
+      syncActions.style.display = 'block';
+      clearBtn.style.display = 'block';
+    } else {
+      icon.textContent = '📄';
+      text.textContent = 'No file selected';
+      pickActions.style.display = 'flex';
+      syncActions.style.display = 'none';
+      clearBtn.style.display = 'none';
+    }
+  }
+
+  async _renderGoogleDriveSection() {
+    const icon = document.getElementById('driveConnectionIcon');
+    const text = document.getElementById('driveConnectionText');
+    const connectBtn = document.getElementById('connectDriveBtn');
+    const disconnectBtn = document.getElementById('disconnectDriveBtn');
+    const filePickActions = document.getElementById('driveFilePickActions');
+    const syncActions = document.getElementById('driveSyncActions');
+    const clearBtn = document.getElementById('clearDriveFileBtn');
+
+    if (this.isGoogleDriveConnected) {
+      icon.textContent = '🟢';
+      text.textContent = 'Connected to Google Drive';
+      connectBtn.style.display = 'none';
+      disconnectBtn.style.display = 'block';
+
+      const fileId = await this.googleDriveService.getStoredFileId();
+      filePickActions.style.display = fileId ? 'none' : 'flex';
+      syncActions.style.display = fileId ? 'block' : 'none';
+      clearBtn.style.display = fileId ? 'block' : 'none';
+    } else {
+      icon.textContent = '🔴';
+      text.textContent = 'Disconnected';
+      connectBtn.style.display = 'block';
+      disconnectBtn.style.display = 'none';
+      filePickActions.style.display = 'none';
+      syncActions.style.display = 'none';
+      clearBtn.style.display = 'none';
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  GitHub sync
+  // ─────────────────────────────────────────────────────────────────
+
   async checkGitHubConnection() {
     try {
       const hasToken = await this.githubAuth.hasStoredToken();
       if (hasToken) {
         const token = await this.githubAuth.getStoredToken();
         const result = await this.githubService.setToken(token);
-        if (result.success) {
-          this.isGitHubConnected = true;
-          console.log("Conectado a GitHub:", result.user.login);
-        }
+        if (result.success) this.isGitHubConnected = true;
       }
-    } catch (error) {
-      console.error("Error verificando conexión GitHub:", error);
+    } catch (e) {
       this.isGitHubConnected = false;
     }
   }
 
-  // Conectar con GitHub
   async connectToGitHub() {
     try {
       const result = await this.githubAuth.authenticate();
@@ -585,755 +741,483 @@ class BookmarksApp {
         const tokenResult = await this.githubService.setToken(result.token);
         if (tokenResult.success) {
           this.isGitHubConnected = true;
-          this.showNotification(
-            "✅ Conectado a GitHub exitosamente",
-            "success"
-          );
-          this.render(); // Actualizar UI
+          this.showNotification('Connected to GitHub', 'success');
+          this._renderGitHubSection();
           return { success: true };
         }
       }
-      throw new Error(result.error || "Error en autenticación");
-    } catch (error) {
-      console.error("Error conectando a GitHub:", error);
-      this.showNotification(
-        "❌ Error conectando a GitHub: " + error.message,
-        "error"
-      );
-      return { success: false, error: error.message };
+      throw new Error(result.error || 'Authentication error');
+    } catch (err) {
+      this.showNotification('GitHub error: ' + err.message, 'error');
+      return { success: false, error: err.message };
     }
   }
 
-  // Desconectar de GitHub
   async disconnectFromGitHub() {
-    try {
-      await this.githubAuth.logout();
-      this.isGitHubConnected = false;
-      this.githubService = new GitHubService(); // Reset service
-      this.showNotification("🔌 Desconectado de GitHub", "info");
-      this.render(); // Actualizar UI
-      return { success: true };
-    } catch (error) {
-      console.error("Error desconectando de GitHub:", error);
-      return { success: false, error: error.message };
-    }
+    await this.githubAuth.logout();
+    this.isGitHubConnected = false;
+    this.githubService = new GitHubService();
+    this.showNotification('Disconnected from GitHub', 'info');
+    this._renderGitHubSection();
   }
 
-  // Sincronizar desde GitHub
   async syncFromGitHub(silent = false) {
     if (!this.isGitHubConnected) {
-      this.showNotification("⚠️ No estás conectado a GitHub", "warning");
-      return { success: false, error: "No conectado a GitHub" };
+      this.showNotification('Not connected to GitHub', 'warning');
+      return { success: false };
     }
-
     try {
-      if (!silent) this.showNotification("🔄 Sincronizando desde GitHub...", "info");
-
+      if (!silent) this.showNotification('Syncing from GitHub…', 'info');
       const result = await this.githubService.syncFromGitHub();
       if (result.success) {
-        // Fusionar favoritos (evitar duplicados)
-        const mergedBookmarks = this.mergeBookmarks(
-          this.bookmarks,
-          result.bookmarks
-        );
-        this.bookmarks = mergedBookmarks;
-        await this.saveBookmarks();
+        this.bookmarks = this.mergeBookmarks(this.bookmarks, result.bookmarks);
         this.lastSync = result.lastSync;
-
-        if (!silent) this.showNotification("✅ Sincronizado desde GitHub", "success");
+        await this.saveBookmarks();
+        await chrome.storage.local.set({ lastSync: this.lastSync });
+        if (!silent) this.showNotification('Synced from GitHub', 'success');
         this.render();
-        return { success: true, bookmarks: mergedBookmarks };
-      } else {
-        throw new Error(result.error);
+        return { success: true };
       }
-    } catch (error) {
-      console.error("Error sincronizando desde GitHub:", error);
-      if (!silent) this.showNotification(
-        "❌ Error sincronizando: " + error.message,
-        "error"
-      );
-      return { success: false, error: error.message };
+      throw new Error(result.error);
+    } catch (err) {
+      if (!silent) this.showNotification('Sync error: ' + err.message, 'error');
+      return { success: false, error: err.message };
     }
   }
 
-  // Sincronizar a GitHub
   async syncToGitHub(silent = false) {
     if (!this.isGitHubConnected) {
-      this.showNotification("⚠️ No estás conectado a GitHub", "warning");
-      return { success: false, error: "No conectado a GitHub" };
+      this.showNotification('Not connected to GitHub', 'warning');
+      return { success: false };
     }
-
     try {
-      if (!silent) this.showNotification("🔄 Sincronizando a GitHub...", "info");
-
+      if (!silent) this.showNotification('Syncing to GitHub…', 'info');
       const result = await this.githubService.syncToGitHub(this.bookmarks);
       if (result.success) {
         this.lastSync = result.lastSync;
-        if (!silent) this.showNotification("✅ Sincronizado a GitHub", "success");
+        await chrome.storage.local.set({ lastSync: this.lastSync });
+        if (!silent) this.showNotification('Synced to GitHub', 'success');
+        this.renderSyncStatus();
         return { success: true };
-      } else {
-        throw new Error(result.error);
       }
-    } catch (error) {
-      console.error("Error sincronizando a GitHub:", error);
-      if (!silent) this.showNotification(
-        "❌ Error sincronizando: " + error.message,
-        "error"
-      );
-      return { success: false, error: error.message };
+      throw new Error(result.error);
+    } catch (err) {
+      if (!silent) this.showNotification('Sync error: ' + err.message, 'error');
+      return { success: false, error: err.message };
     }
   }
 
-  // Sincronización bidireccional
   async fullSync() {
     if (!this.isGitHubConnected) {
-      this.showNotification("⚠️ No estás conectado a GitHub", "warning");
-      return { success: false, error: "No conectado a GitHub" };
+      this.showNotification('Not connected to GitHub', 'warning');
+      return { success: false };
     }
-
-    try {
-      this.showNotification("🔄 Sincronización completa...", "info");
-
-      // Primero sincronizar desde GitHub
-      const fromResult = await this.syncFromGitHub(true);
-      if (!fromResult.success) {
-        throw new Error("Error sincronizando desde GitHub");
-      }
-
-      // Luego sincronizar a GitHub
-      const toResult = await this.syncToGitHub(true);
-      if (!toResult.success) {
-        throw new Error("Error sincronizando a GitHub");
-      }
-
-      this.showNotification("✅ Sincronización completa exitosa", "success");
-      return { success: true };
-    } catch (error) {
-      console.error("Error en sincronización completa:", error);
-      this.showNotification(
-        "❌ Error en sincronización: " + error.message,
-        "error"
-      );
-      return { success: false, error: error.message };
-    }
+    this.showNotification('Full sync…', 'info');
+    const from = await this.syncFromGitHub(true);
+    if (!from.success) return from;
+    const to = await this.syncToGitHub(true);
+    if (!to.success) return to;
+    this.showNotification('Sync complete', 'success');
+    this.renderSyncStatus();
+    return { success: true };
   }
 
-  // Fusionar favoritos evitando duplicados
-  mergeBookmarks(localBookmarks, remoteBookmarks) {
-    const merged = [...localBookmarks];
-    const localUrls = new Set(localBookmarks.map((b) => b.url));
-
-    remoteBookmarks.forEach((remoteBookmark) => {
-      if (!localUrls.has(remoteBookmark.url)) {
-        merged.push(remoteBookmark);
-      }
-    });
-
-    // Ordenar por timestamp
+  mergeBookmarks(local, remote) {
+    const merged = [...local];
+    const localUrls = new Set(local.map((b) => b.url));
+    remote.forEach((r) => { if (!localUrls.has(r.url)) merged.push(r); });
     return merged.sort((a, b) => b.timestamp - a.timestamp);
   }
 
-  // Mostrar notificación
-  showNotification(message, type = "info") {
-    // Crear elemento de notificación
-    const notification = document.createElement("div");
-    notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 12px 20px;
-            border-radius: 8px;
-            color: white;
-            font-size: 14px;
-            font-weight: 500;
-            z-index: 10000;
-            max-width: 300px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-            animation: slideIn 0.3s ease;
-        `;
+  // ─────────────────────────────────────────────────────────────────
+  //  Repository management
+  // ─────────────────────────────────────────────────────────────────
 
-    // Colores según tipo
-    const colors = {
-      success: "#28a745",
-      error: "#dc3545",
-      warning: "#ffc107",
-      info: "#17a2b8",
-    };
-    notification.style.background = colors[type] || colors.info;
-
-    notification.textContent = message;
-    document.body.appendChild(notification);
-
-    // Remover después de 3 segundos
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.style.animation = "slideOut 0.3s ease";
-        setTimeout(() => {
-          if (notification.parentNode) {
-            document.body.removeChild(notification);
-          }
-        }, 300);
-      }
-    }, 3000);
-  }
-
-  // ===== MÉTODOS DE GESTIÓN DE REPOSITORIOS =====
-
-  // Verificar estado del repositorio
   async checkRepositoryStatus() {
-    if (!this.isGitHubConnected || !this.githubService) {
-      return;
-    }
-
     try {
       this.repositoryStatus = await this.githubService.checkRepositoryStatus();
-      console.log("Estado del repositorio:", this.repositoryStatus);
-    } catch (error) {
-      console.error("Error verificando estado del repositorio:", error);
-      this.repositoryStatus = {
-        success: false,
-        status: "error",
-        message: "Error verificando repositorio",
-      };
+    } catch {
+      this.repositoryStatus = { success: false, status: 'error', message: 'Error checking repository' };
     }
   }
 
-  // Actualizar estado del repositorio en la UI
   updateRepositoryStatus() {
-    const repoStatus = document.getElementById("repoStatus");
-    const syncActions = document.getElementById("syncActions");
-
-    if (!this.repositoryStatus) {
-      repoStatus.textContent = "Verificando repositorio...";
-      repoStatus.className = "repo-status";
-      syncActions.style.display = "none";
-      return;
-    }
-
+    const repoStatus = document.getElementById('repoStatus');
+    const syncActions = document.getElementById('syncActions');
+    if (!this.repositoryStatus) { repoStatus.textContent = 'Checking repository…'; syncActions.style.display = 'none'; return; }
     if (this.repositoryStatus.success) {
       switch (this.repositoryStatus.status) {
-        case "ready":
-          repoStatus.textContent = "✅ Repositorio listo para sincronización";
-          repoStatus.className = "repo-status ready";
-          syncActions.style.display = "block";
+        case 'ready':
+          repoStatus.textContent = 'Repository ready';
+          repoStatus.className = 'repo-status ready';
+          syncActions.style.display = 'block';
           break;
-        case "no_bookmarks_file":
-          repoStatus.textContent = "⚠️ Repositorio sin archivo de favoritos";
-          repoStatus.className = "repo-status no-bookmarks";
-          syncActions.style.display = "block";
+        case 'no_bookmarks_file':
+          repoStatus.textContent = 'No bookmarks file in repo';
+          repoStatus.className = 'repo-status no-bookmarks';
+          syncActions.style.display = 'block';
           break;
         default:
           repoStatus.textContent = this.repositoryStatus.message;
-          repoStatus.className = "repo-status";
-          syncActions.style.display = "none";
+          repoStatus.className = 'repo-status';
+          syncActions.style.display = 'none';
       }
     } else {
-      repoStatus.textContent = `❌ ${this.repositoryStatus.message}`;
-      repoStatus.className = "repo-status not-found";
-      syncActions.style.display = "none";
+      repoStatus.textContent = this.repositoryStatus.message;
+      repoStatus.className = 'repo-status not-found';
+      syncActions.style.display = 'none';
     }
   }
 
-  // Mostrar lista de repositorios
   async showRepositoryList() {
     try {
-      this.showNotification("🔄 Cargando repositorios...", "info");
-
+      this.showNotification('Loading repositories…', 'info');
       const result = await this.githubService.listUserRepositories();
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-
+      if (!result.success) throw new Error(result.error);
       this.availableRepositories = result.repositories;
-
-      // No verificar archivos aquí - solo mostrar la lista
       this.renderRepositoryList();
-      document.getElementById("repoListModal").style.display = "flex";
-    } catch (error) {
-      console.error("Error cargando repositorios:", error);
-      this.showNotification(
-        "❌ Error cargando repositorios: " + error.message,
-        "error"
-      );
+      document.getElementById('repoListModal').style.display = 'flex';
+    } catch (err) {
+      this.showNotification('Error: ' + err.message, 'error');
     }
   }
 
-  // Renderizar lista de repositorios
   renderRepositoryList() {
-    const repoList = document.getElementById("repoList");
-    repoList.innerHTML = "";
-
+    const list = document.getElementById('repoList');
+    list.innerHTML = '';
     this.availableRepositories.forEach((repo) => {
-      const repoItem = document.createElement("div");
-      repoItem.className = "repo-item";
-      repoItem.dataset.repoName = repo.name;
-
-      repoItem.innerHTML = `
-                <div class="repo-item-info">
-                    <div class="repo-item-name">${this.escapeHtml(
-                      repo.name
-                    )}</div>
-                    <div class="repo-item-description">${this.escapeHtml(
-                      repo.description || "Sin descripción"
-                    )}</div>
-                    <div class="repo-item-meta">
-                        <span>${
-                          repo.private ? "🔒 Privado" : "🌐 Público"
-                        }</span>
-                        <span>📅 ${new Date(
-                          repo.updatedAt
-                        ).toLocaleDateString()}</span>
-                    </div>
-                </div>
-                <div class="repo-item-status">Seleccionar</div>
-            `;
-
-      repoItem.addEventListener("click", () => {
-        this.selectRepository(repo.name);
-      });
-
-      repoList.appendChild(repoItem);
+      const item = document.createElement('div');
+      item.className = 'repo-item';
+      item.innerHTML = `
+        <div class="repo-item-info">
+          <div class="repo-item-name">${this.escapeHtml(repo.name)}</div>
+          <div class="repo-item-description">${this.escapeHtml(repo.description || 'No description')}</div>
+          <div class="repo-item-meta">
+            <span>${repo.private ? 'Private' : 'Public'}</span>
+            <span>${new Date(repo.updatedAt).toLocaleDateString()}</span>
+          </div>
+        </div>
+        <div class="repo-item-status">Select</div>
+      `;
+      item.addEventListener('click', () => this.selectRepository(repo.name));
+      list.appendChild(item);
     });
   }
 
-  // Seleccionar repositorio
   async selectRepository(repoName) {
     try {
-      this.showNotification("🔄 Verificando repositorio...", "info");
-
-      // Cambiar repositorio activo
+      this.showNotification('Checking repository…', 'info');
       const result = await this.githubService.setActiveRepository(repoName);
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-
-      // Verificar si el repositorio tiene archivo de favoritos
-      const bookmarksCheck =
-        await this.githubService.checkRepositoryForBookmarks(repoName);
-
-      if (bookmarksCheck.success && bookmarksCheck.hasBookmarksFile) {
-        // Repositorio tiene archivo de favoritos - listo para usar
+      if (!result.success) throw new Error(result.error);
+      const check = await this.githubService.checkRepositoryForBookmarks(repoName);
+      if (check.success && check.hasBookmarksFile) {
         await this.checkRepositoryStatus();
         this.hideRepositoryList();
         this.renderSyncTab();
-        this.showNotification(
-          `✅ Repositorio ${repoName} listo para sincronización`,
-          "success"
-        );
+        this.showNotification(`${repoName} ready`, 'success');
       } else {
-        // No tiene archivo de favoritos - preguntar si crear
         this.showRepositorySetupOptions(repoName);
       }
-    } catch (error) {
-      console.error("Error seleccionando repositorio:", error);
-      this.showNotification(
-        "❌ Error verificando repositorio: " + error.message,
-        "error"
-      );
+    } catch (err) {
+      this.showNotification('Error: ' + err.message, 'error');
     }
   }
 
-  // Mostrar opciones para repositorio sin archivo de favoritos
   showRepositorySetupOptions(repoName) {
-    const modal = document.createElement("div");
-    modal.className = "modal-overlay";
-    modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 10000;
-        `;
-
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
     modal.innerHTML = `
-            <div style="
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-                max-width: 500px;
-                width: 90%;
-            ">
-                <h3 style="margin-bottom: 20px; color: #333;">📁 Configurar Repositorio</h3>
-                <p style="margin-bottom: 20px; color: #666;">
-                    El repositorio <strong>${this.escapeHtml(
-                      repoName
-                    )}</strong> no tiene archivo de favoritos.
-                    ¿Qué quieres hacer?
-                </p>
-                
-                <div style="display: flex; flex-direction: column; gap: 15px; margin-bottom: 20px;">
-                    <button id="useExistingBookmarks" style="
-                        padding: 15px 20px;
-                        background: #28a745;
-                        color: white;
-                        border: none;
-                        border-radius: 8px;
-                        cursor: pointer;
-                        font-size: 14px;
-                        font-weight: 500;
-                    ">
-                        📥 Usar favoritos locales (${
-                          this.bookmarks.length
-                        } favoritos)
-                    </button>
-                    
-                    <button id="createBookmarksFile" style="
-                        padding: 15px 20px;
-                        background: #667eea;
-                        color: white;
-                        border: none;
-                        border-radius: 8px;
-                        cursor: pointer;
-                        font-size: 14px;
-                        font-weight: 500;
-                    ">
-                        ➕ Crear archivo vacío
-                    </button>
-                    
-                    <button id="importFromGitHub" style="
-                        padding: 15px 20px;
-                        background: #17a2b8;
-                        color: white;
-                        border: none;
-                        border-radius: 8px;
-                        cursor: pointer;
-                        font-size: 14px;
-                        font-weight: 500;
-                    ">
-                        🔄 Buscar en otros repositorios
-                    </button>
-                </div>
-                
-                <div style="display: flex; gap: 10px; justify-content: flex-end;">
-                    <button id="cancelSetup" style="
-                        padding: 10px 20px;
-                        border: 1px solid #ddd;
-                        background: white;
-                        border-radius: 6px;
-                        cursor: pointer;
-                        font-size: 14px;
-                    ">Cancelar</button>
-                </div>
-            </div>
-        `;
-
+      <div class="modal-content">
+        <h3>Set up ${this.escapeHtml(repoName)}</h3>
+        <p style="font-size:13px;color:var(--ink-3);margin-bottom:16px">No bookmarks file found. What do you want to do?</p>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <button id="_useLocal" class="action-button primary">Use local bookmarks (${this.bookmarks.length})</button>
+          <button id="_createEmpty" class="action-button secondary">Create empty file</button>
+          <button id="_importOther" class="action-button secondary">Import from another repo</button>
+          <button id="_cancelSetup" class="action-button secondary">Cancel</button>
+        </div>
+      </div>
+    `;
     document.body.appendChild(modal);
-
-    // Event listeners
-    document
-      .getElementById("useExistingBookmarks")
-      .addEventListener("click", () => {
-        this.setupRepositoryWithFile(repoName, "use_local");
-        document.body.removeChild(modal);
-      });
-
-    document
-      .getElementById("createBookmarksFile")
-      .addEventListener("click", () => {
-        this.setupRepositoryWithFile(repoName, "empty");
-        document.body.removeChild(modal);
-      });
-
-    document
-      .getElementById("importFromGitHub")
-      .addEventListener("click", () => {
-        this.searchOtherRepositories(repoName);
-        document.body.removeChild(modal);
-      });
-
-    document.getElementById("cancelSetup").addEventListener("click", () => {
-      document.body.removeChild(modal);
-    });
+    modal.querySelector('#_useLocal').addEventListener('click', () => { this.setupRepositoryWithFile(repoName, 'use_local'); modal.remove(); });
+    modal.querySelector('#_createEmpty').addEventListener('click', () => { this.setupRepositoryWithFile(repoName, 'empty'); modal.remove(); });
+    modal.querySelector('#_importOther').addEventListener('click', () => { this.searchOtherRepositories(repoName); modal.remove(); });
+    modal.querySelector('#_cancelSetup').addEventListener('click', () => modal.remove());
   }
 
-  // Configurar repositorio con archivo de favoritos
   async setupRepositoryWithFile(repoName, option) {
     try {
-      this.showNotification("🔄 Configurando repositorio...", "info");
-
-      let bookmarksToUpload = [];
-
-      if (option === "use_local") {
-        bookmarksToUpload = this.bookmarks;
-      } else if (option === "empty") {
-        bookmarksToUpload = [];
-      } else {
-        // create - crear archivo vacío
-        bookmarksToUpload = [];
-      }
-
-      // Crear archivo de favoritos en el repositorio
-      const result = await this.githubService.createBookmarksFileInRepository(
-        bookmarksToUpload
-      );
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-
-      // Verificar estado del repositorio
+      this.showNotification('Setting up repository…', 'info');
+      const books = option === 'use_local' ? this.bookmarks : [];
+      const result = await this.githubService.createBookmarksFileInRepository(books);
+      if (!result.success) throw new Error(result.error);
       await this.checkRepositoryStatus();
       this.hideRepositoryList();
       this.renderSyncTab();
-
-      this.showNotification(
-        `✅ Repositorio ${repoName} configurado exitosamente`,
-        "success"
-      );
-    } catch (error) {
-      console.error("Error configurando repositorio:", error);
-      this.showNotification(
-        "❌ Error configurando repositorio: " + error.message,
-        "error"
-      );
+      this.showNotification(`${repoName} set up`, 'success');
+    } catch (err) {
+      this.showNotification('Error: ' + err.message, 'error');
     }
   }
 
-  // Buscar favoritos en otros repositorios
   async searchOtherRepositories(currentRepoName) {
     try {
-      this.showNotification(
-        "🔄 Buscando favoritos en otros repositorios...",
-        "info"
-      );
-
-      // Obtener lista de repositorios
+      this.showNotification('Searching other repos…', 'info');
       const result = await this.githubService.listUserRepositories();
-      if (!result.success) {
-        throw new Error(result.error);
+      if (!result.success) throw new Error(result.error);
+      const others = result.repositories.filter((r) => r.name !== currentRepoName);
+      const withBooks = [];
+      for (const repo of others) {
+        const check = await this.githubService.checkRepositoryForBookmarks(repo.name);
+        if (check.success && check.hasBookmarksFile) withBooks.push(repo);
       }
-
-      // Filtrar repositorios que no sean el actual
-      const otherRepos = result.repositories.filter(
-        (repo) => repo.name !== currentRepoName
-      );
-
-      // Buscar repositorios que tengan archivo de favoritos
-      const reposWithBookmarks = [];
-
-      for (let repo of otherRepos) {
-        const checkResult =
-          await this.githubService.checkRepositoryForBookmarks(repo.name);
-        if (checkResult.success && checkResult.hasBookmarksFile) {
-          reposWithBookmarks.push(repo);
-        }
-      }
-
-      if (reposWithBookmarks.length === 0) {
-        this.showNotification(
-          "ℹ️ No se encontraron favoritos en otros repositorios",
-          "info"
-        );
-        return;
-      }
-
-      // Mostrar modal de selección de repositorio con favoritos
-      this.showRepositoryImportModal(reposWithBookmarks, currentRepoName);
-    } catch (error) {
-      console.error("Error buscando en otros repositorios:", error);
-      this.showNotification(
-        "❌ Error buscando favoritos: " + error.message,
-        "error"
-      );
+      if (withBooks.length === 0) { this.showNotification('No bookmarks found in other repos', 'info'); return; }
+      this.showRepositoryImportModal(withBooks, currentRepoName);
+    } catch (err) {
+      this.showNotification('Error: ' + err.message, 'error');
     }
   }
 
-  // Mostrar modal para importar desde otro repositorio
-  showRepositoryImportModal(reposWithBookmarks, targetRepoName) {
-    const modal = document.createElement("div");
-    modal.className = "modal-overlay";
-    modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 10000;
-        `;
-
+  showRepositoryImportModal(repos, targetRepo) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
     modal.innerHTML = `
-            <div style="
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-                max-width: 600px;
-                width: 90%;
-                max-height: 80vh;
-                overflow-y: auto;
-            ">
-                <h3 style="margin-bottom: 20px; color: #333;">🔄 Importar Favoritos</h3>
-                <p style="margin-bottom: 20px; color: #666;">
-                    Se encontraron ${
-                      reposWithBookmarks.length
-                    } repositorio(s) con favoritos. 
-                    Selecciona uno para importar a <strong>${this.escapeHtml(
-                      targetRepoName
-                    )}</strong>:
-                </p>
-                
-                <div id="importRepoList" style="max-height: 400px; overflow-y: auto;">
-                    <!-- Repositorios se cargarán aquí -->
-                </div>
-                
-                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
-                    <button id="cancelImport" style="
-                        padding: 10px 20px;
-                        border: 1px solid #ddd;
-                        background: white;
-                        border-radius: 6px;
-                        cursor: pointer;
-                        font-size: 14px;
-                    ">Cancelar</button>
-                </div>
-            </div>
-        `;
-
+      <div class="modal-content">
+        <h3>Import bookmarks</h3>
+        <p style="font-size:13px;color:var(--ink-3);margin-bottom:12px">Found ${repos.length} repo(s) with bookmarks. Select one to import into <strong>${this.escapeHtml(targetRepo)}</strong>.</p>
+        <div id="_importList" class="repo-list"></div>
+        <div class="modal-actions"><button id="_cancelImport" class="action-button secondary">Cancel</button></div>
+      </div>
+    `;
     document.body.appendChild(modal);
-
-    // Renderizar lista de repositorios con favoritos
-    const repoList = document.getElementById("importRepoList");
-    reposWithBookmarks.forEach((repo) => {
-      const repoItem = document.createElement("div");
-      repoItem.className = "repo-item";
-      repoItem.style.cssText = `
-                display: flex;
-                align-items: center;
-                padding: 12px;
-                border: 1px solid #e9ecef;
-                border-radius: 8px;
-                margin-bottom: 8px;
-                cursor: pointer;
-                transition: all 0.3s ease;
-            `;
-
-      repoItem.innerHTML = `
-                <div style="flex: 1;">
-                    <div style="font-weight: 600; color: #333; margin-bottom: 4px;">${this.escapeHtml(
-                      repo.name
-                    )}</div>
-                    <div style="font-size: 12px; color: #666; margin-bottom: 4px;">${this.escapeHtml(
-                      repo.description || "Sin descripción"
-                    )}</div>
-                    <div style="font-size: 11px; color: #999; display: flex; gap: 10px;">
-                        <span>${
-                          repo.private ? "🔒 Privado" : "🌐 Público"
-                        }</span>
-                        <span>📅 ${new Date(
-                          repo.updatedAt
-                        ).toLocaleDateString()}</span>
-                    </div>
-                </div>
-                <div style="margin-left: 10px; padding: 4px 8px; background: #d4edda; color: #155724; border-radius: 4px; font-size: 10px; font-weight: 500;">
-                    Tiene favoritos
-                </div>
-            `;
-
-      repoItem.addEventListener("click", () => {
-        this.importFromRepository(repo.name, targetRepoName);
-        document.body.removeChild(modal);
-      });
-
-      repoList.appendChild(repoItem);
+    const list = modal.querySelector('#_importList');
+    repos.forEach((repo) => {
+      const item = document.createElement('div');
+      item.className = 'repo-item';
+      item.innerHTML = `<div class="repo-item-info"><div class="repo-item-name">${this.escapeHtml(repo.name)}</div></div><div class="repo-item-status">Import</div>`;
+      item.addEventListener('click', () => { this.importFromRepository(repo.name, targetRepo); modal.remove(); });
+      list.appendChild(item);
     });
-
-    // Event listeners
-    document.getElementById("cancelImport").addEventListener("click", () => {
-      document.body.removeChild(modal);
-    });
+    modal.querySelector('#_cancelImport').addEventListener('click', () => modal.remove());
   }
 
-  // Importar favoritos desde otro repositorio
-  async importFromRepository(sourceRepoName, targetRepoName) {
+  async importFromRepository(sourceRepo, targetRepo) {
     try {
-      this.showNotification("🔄 Importando favoritos...", "info");
-
-      // Cambiar temporalmente al repositorio fuente
+      this.showNotification('Importing bookmarks…', 'info');
       const originalRepo = this.githubService.repoName;
       let sourceResult;
       try {
-        this.githubService.repoName = sourceRepoName;
-
-        // Obtener favoritos del repositorio fuente
+        this.githubService.repoName = sourceRepo;
         sourceResult = await this.githubService.syncFromGitHub();
-        if (!sourceResult.success) {
-          throw new Error("Error obteniendo favoritos del repositorio fuente");
-        }
-
-        // Cambiar al repositorio destino y crear archivo de favoritos
-        this.githubService.repoName = targetRepoName;
-        const createResult =
-          await this.githubService.createBookmarksFileInRepository(
-            sourceResult.bookmarks
-          );
-        if (!createResult.success) {
-          throw new Error("Error creando archivo en repositorio destino");
-        }
+        if (!sourceResult.success) throw new Error('Error reading source repo');
+        this.githubService.repoName = targetRepo;
+        const createResult = await this.githubService.createBookmarksFileInRepository(sourceResult.bookmarks);
+        if (!createResult.success) throw new Error('Error writing to target repo');
       } finally {
         this.githubService.repoName = originalRepo;
       }
-
-      // Verificar estado del repositorio destino
       await this.checkRepositoryStatus();
       this.renderSyncTab();
-
-      this.showNotification(
-        `✅ Favoritos importados exitosamente a ${targetRepoName}`,
-        "success"
-      );
-    } catch (error) {
-      console.error("Error importando favoritos:", error);
-      this.showNotification(
-        "❌ Error importando favoritos: " + error.message,
-        "error"
-      );
+      this.showNotification(`Imported to ${targetRepo}`, 'success');
+    } catch (err) {
+      this.showNotification('Import error: ' + err.message, 'error');
     }
   }
 
-  // Ocultar lista de repositorios
   hideRepositoryList() {
-    document.getElementById("repoListModal").style.display = "none";
+    document.getElementById('repoListModal').style.display = 'none';
   }
 
-  // Crear nuevo repositorio
   async createNewRepository() {
     try {
-      this.showNotification("🔄 Creando nuevo repositorio...", "info");
-
+      this.showNotification('Creating repository…', 'info');
       const result = await this.githubService.ensureRepository();
-      if (!result.success) {
-        throw new Error(result.error);
-      }
-
-      // Verificar estado del nuevo repositorio
+      if (!result.success) throw new Error(result.error);
       await this.checkRepositoryStatus();
       this.renderSyncTab();
-
-      this.showNotification(
-        "✅ Nuevo repositorio creado exitosamente",
-        "success"
-      );
-    } catch (error) {
-      console.error("Error creando repositorio:", error);
-      this.showNotification(
-        "❌ Error creando repositorio: " + error.message,
-        "error"
-      );
+      this.showNotification('Repository created', 'success');
+    } catch (err) {
+      this.showNotification('Error: ' + err.message, 'error');
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Local File sync
+  // ─────────────────────────────────────────────────────────────────
+
+  async syncLocalFilePickFile() {
+    const result = await this.localFileService.pickFile();
+    if (result.success) {
+      this.hasLocalFile = true;
+      this.showNotification('File: ' + result.name, 'success');
+      this._renderLocalFileSection();
+    } else if (result.error !== 'Cancelado') {
+      this.showNotification('Error: ' + result.error, 'error');
+    }
+  }
+
+  async syncLocalFileCreate() {
+    const result = await this.localFileService.createFile();
+    if (result.success) {
+      this.hasLocalFile = true;
+      this.showNotification('Created: ' + result.name, 'success');
+      this._renderLocalFileSection();
+    } else if (result.error !== 'Cancelado') {
+      this.showNotification('Error: ' + result.error, 'error');
+    }
+  }
+
+  async syncLocalFileFrom(silent = false) {
+    try {
+      if (!silent) this.showNotification('Importing from file…', 'info');
+      const result = await this.localFileService.syncFromFile();
+      if (result.success) {
+        this.bookmarks = this.mergeBookmarks(this.bookmarks, result.bookmarks);
+        await this.saveBookmarks();
+        if (!silent) this.showNotification('Imported from file', 'success');
+        this.render();
+        return { success: true };
+      }
+      throw new Error(result.error);
+    } catch (err) {
+      if (!silent) this.showNotification('Import error: ' + err.message, 'error');
+      return { success: false, error: err.message };
+    }
+  }
+
+  async syncLocalFileTo(silent = false) {
+    try {
+      if (!silent) this.showNotification('Exporting to file…', 'info');
+      const result = await this.localFileService.syncToFile(this.bookmarks);
+      if (result.success) {
+        if (!silent) this.showNotification('Exported to file', 'success');
+        return { success: true };
+      }
+      throw new Error(result.error);
+    } catch (err) {
+      if (!silent) this.showNotification('Export error: ' + err.message, 'error');
+      return { success: false, error: err.message };
+    }
+  }
+
+  async fullSyncLocalFile() {
+    this.showNotification('Syncing file…', 'info');
+    const from = await this.syncLocalFileFrom(true);
+    if (!from.success) { this.showNotification('Sync error: ' + from.error, 'error'); return from; }
+    const to = await this.syncLocalFileTo(true);
+    if (!to.success) { this.showNotification('Sync error: ' + to.error, 'error'); return to; }
+    this.showNotification('Sync complete', 'success');
+    return { success: true };
+  }
+
+  async clearLocalFile() {
+    await this.localFileService.clearStoredFile();
+    this.hasLocalFile = false;
+    this._renderLocalFileSection();
+    this.showNotification('File unlinked', 'info');
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  //  Google Drive sync
+  // ─────────────────────────────────────────────────────────────────
+
+  async connectToGoogleDrive() {
+    const result = await this.googleDriveAuth.authenticate();
+    if (result.success) {
+      this.googleDriveToken = result.token;
+      this.isGoogleDriveConnected = true;
+      this.showNotification('Connected to Google Drive', 'success');
+      this._renderGoogleDriveSection();
+    } else {
+      if (result.error && result.error.toLowerCase().includes('oauth2')) {
+        document.getElementById('driveSetupWarning').style.display = 'block';
+      }
+      this.showNotification('Drive error: ' + result.error, 'error');
+    }
+  }
+
+  async disconnectFromGoogleDrive() {
+    await this.googleDriveAuth.logout(this.googleDriveToken);
+    this.googleDriveToken = null;
+    this.isGoogleDriveConnected = false;
+    await this.googleDriveService.clearFileId();
+    this.showNotification('Disconnected from Drive', 'info');
+    this._renderGoogleDriveSection();
+  }
+
+  async createDriveFile() {
+    if (!this.googleDriveToken) return;
+    this.showNotification('Creating Drive file…', 'info');
+    const result = await this.googleDriveService.createFile(this.bookmarks, this.googleDriveToken);
+    if (result.success) { this.showNotification('Drive file created', 'success'); this._renderGoogleDriveSection(); }
+    else this.showNotification('Error: ' + result.error, 'error');
+  }
+
+  async selectDriveFile() {
+    if (!this.googleDriveToken) return;
+    this.showNotification('Searching Drive…', 'info');
+    const result = await this.googleDriveService.findExistingFile(this.googleDriveToken);
+    if (result.success && result.fileId) {
+      await this.googleDriveService.saveFileId(result.fileId);
+      this.showNotification('Drive file linked', 'success');
+      this._renderGoogleDriveSection();
+    } else if (result.success) {
+      this.showNotification('bookmarks.json not found in Drive', 'info');
+    } else {
+      this.showNotification('Error: ' + result.error, 'error');
+    }
+  }
+
+  async clearDriveFile() {
+    await this.googleDriveService.clearFileId();
+    this._renderGoogleDriveSection();
+    this.showNotification('Drive file unlinked', 'info');
+  }
+
+  async syncDriveFrom(silent = false) {
+    if (!this.googleDriveToken) { this.showNotification('Not connected to Drive', 'warning'); return { success: false }; }
+    try {
+      if (!silent) this.showNotification('Importing from Drive…', 'info');
+      const result = await this.googleDriveService.syncFromDrive(this.googleDriveToken);
+      if (result.success) {
+        this.bookmarks = this.mergeBookmarks(this.bookmarks, result.bookmarks);
+        await this.saveBookmarks();
+        if (!silent) this.showNotification('Imported from Drive', 'success');
+        this.render();
+        return { success: true };
+      }
+      throw new Error(result.error);
+    } catch (err) {
+      if (!silent) this.showNotification('Error: ' + err.message, 'error');
+      return { success: false, error: err.message };
+    }
+  }
+
+  async syncDriveTo(silent = false) {
+    if (!this.googleDriveToken) { this.showNotification('Not connected to Drive', 'warning'); return { success: false }; }
+    try {
+      if (!silent) this.showNotification('Exporting to Drive…', 'info');
+      const result = await this.googleDriveService.syncToDrive(this.bookmarks, this.googleDriveToken);
+      if (result.success) {
+        if (!silent) this.showNotification('Exported to Drive', 'success');
+        return { success: true };
+      }
+      throw new Error(result.error);
+    } catch (err) {
+      if (!silent) this.showNotification('Error: ' + err.message, 'error');
+      return { success: false, error: err.message };
+    }
+  }
+
+  async fullSyncDrive() {
+    this.showNotification('Syncing Drive…', 'info');
+    const from = await this.syncDriveFrom(true);
+    if (!from.success) { this.showNotification('Sync error: ' + from.error, 'error'); return from; }
+    const to = await this.syncDriveTo(true);
+    if (!to.success) { this.showNotification('Sync error: ' + to.error, 'error'); return to; }
+    this.showNotification('Sync complete', 'success');
+    return { success: true };
   }
 }
 
-// Initialize app when popup opens
-let app;
-document.addEventListener("DOMContentLoaded", () => {
-  app = new BookmarksApp();
-});
+document.addEventListener('DOMContentLoaded', () => { new BookmarksApp(); });
